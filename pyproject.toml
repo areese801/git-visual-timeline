@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-visual-timeline"
+version = "0.1.0"
+description = "Git Visual Timeline — a keyboard-driven TUI for exploring file commit history"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.40.0",
+    "gitpython>=3.1.40",
+    "pygments>=2.17.0",
+    "thefuzz[speedup]>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "textual-dev>=1.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+gvt = "gvt.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

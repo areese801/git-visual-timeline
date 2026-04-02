@@ -1,0 +1,178 @@
+/* Tokyo Night color scheme for gvt */
+
+Screen {
+    background: #1a1b26;
+    color: #c0caf5;
+}
+
+/* Pane containers */
+#left-pane {
+    width: 25%;
+    height: 100%;
+}
+
+#file-tree-pane {
+    height: 1fr;
+    border: solid #3b4261;
+    border-title-color: #565f89;
+    border-title-align: left;
+}
+
+#file-tree-pane:focus-within {
+    border: solid #7aa2f7;
+    border-title-color: #7aa2f7;
+}
+
+#right-pane {
+    width: 75%;
+    height: 100%;
+}
+
+#timeline-pane {
+    height: auto;
+    min-height: 9;
+    max-height: 12;
+    border: solid #3b4261;
+    border-title-color: #565f89;
+    border-title-align: left;
+}
+
+#timeline-pane:focus-within {
+    border: solid #7aa2f7;
+    border-title-color: #7aa2f7;
+}
+
+#commit-bar-pane {
+    height: auto;
+    min-height: 4;
+    max-height: 6;
+    border: solid #3b4261;
+    border-title-color: #565f89;
+    border-title-align: left;
+}
+
+#commit-bar-pane:focus-within {
+    border: solid #7aa2f7;
+    border-title-color: #7aa2f7;
+}
+
+#diff-pane {
+    height: 1fr;
+    border: solid #3b4261;
+    border-title-color: #565f89;
+    border-title-align: left;
+}
+
+#diff-pane:focus-within {
+    border: solid #7aa2f7;
+    border-title-color: #7aa2f7;
+}
+
+
+#changed-files-pane {
+    height: auto;
+    min-height: 16;
+    max-height: 32;
+    border: solid #3b4261;
+    border-title-color: #565f89;
+    border-title-align: left;
+}
+
+#changed-files-pane:focus-within {
+    border: solid #7aa2f7;
+    border-title-color: #7aa2f7;
+}
+
+/* Status bar */
+GVTStatusBar {
+    dock: bottom;
+    height: 2;
+    background: #1a1b26;
+}
+
+/* File tree */
+FileTreeWidget {
+    background: #1a1b26;
+    scrollbar-background: #1a1b26;
+    scrollbar-color: #3b4261;
+}
+
+FileTreeWidget .file-entry {
+    color: #c0caf5;
+}
+
+FileTreeWidget .file-entry--selected {
+    background: #283457;
+}
+
+FileTreeWidget .dir-entry {
+    color: #7aa2f7;
+}
+
+/* Timeline */
+TimelineWidget {
+    background: #1a1b26;
+    height: 100%;
+}
+
+/* Commit bar */
+CommitMessageBar {
+    background: #1a1b26;
+    height: 100%;
+}
+
+/* Changed files */
+ChangedFilesWidget {
+    background: #1a1b26;
+    scrollbar-background: #1a1b26;
+    scrollbar-color: #3b4261;
+    height: 100%;
+}
+
+/* Diff view */
+DiffViewWidget {
+    background: #1a1b26;
+    scrollbar-background: #1a1b26;
+    scrollbar-color: #3b4261;
+}
+
+/* Modals */
+.modal-overlay {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.7);
+}
+
+.modal-container {
+    width: 70%;
+    height: 70%;
+    background: #1a1b26;
+    border: solid #7aa2f7;
+    padding: 1 2;
+}
+
+.modal-input {
+    background: #24283b;
+    color: #c0caf5;
+    border: solid #3b4261;
+}
+
+.modal-input:focus {
+    border: solid #7aa2f7;
+}
+
+.modal-results {
+    background: #1a1b26;
+    color: #c0caf5;
+}
+
+.modal-result--selected {
+    background: #283457;
+}
+
+.commit-detail-popup {
+    width: 60%;
+    height: 50%;
+    background: #1a1b26;
+    border: solid #7aa2f7;
+    padding: 1 2;
+}
