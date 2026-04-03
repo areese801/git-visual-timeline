@@ -80,7 +80,6 @@ class GVTApp(App):
         self.current_commits: list[CommitInfo] = []
         self._q_count: int = 0
         self._q_timer = None
-        self._saved_tree_state: set[str] = set()
         self._all_commits_cache: list[CommitInfo] | None = None
         self._preload_worker = None
         self._pane_order = [

@@ -218,27 +218,45 @@ class TimelineWidget(Widget, can_focus=True):
 
         # Build tick display rows
         n = len(self.commits)
-        if n <= width and n > 0:
-            base_gap = width // n - 1  # gap chars between ticks (excluding the tick itself)
-            extra = width - n * (base_gap + 1)  # leftover chars to distribute
-            view_start = 0
-            view_end = n
-        elif n > 0:
-            # More commits than width — show a window centered on cursor
-            base_gap = 0
-            extra = 0
-            half = width // 2
-            view_start = max(0, self.cursor - half)
-            view_end = min(n, view_start + width)
-            if view_end == n:
-                view_start = max(0, n - width)
-            if view_start == 0:
-                view_end = min(n, width)
-        else:
+        max_ticks = min(n, 50)  # cap visible ticks for consistent spacing
+
+        if max_ticks <= 0:
             base_gap = 0
             extra = 0
             view_start = 0
             view_end = 0
+        elif n <= max_ticks:
+            # All commits fit — distribute evenly across width
+            gap_count = n - 1
+            if gap_count > 0:
+                base_gap = (width - n) // gap_count
+                extra = (width - n) - base_gap * gap_count
+            else:
+                base_gap = 0
+                extra = 0
+            view_start = 0
+            view_end = n
+        else:
+            # More commits than max_ticks — scrolling window centered on cursor
+            # Reserve 2 chars for overflow arrows ◀ ▶
+            usable = width - 2
+            visible = min(max_ticks, usable)
+            # Total chars = visible ticks + (visible-1) gaps = usable
+            # So (visible-1) gaps = usable - visible
+            gap_count = visible - 1
+            if gap_count > 0:
+                base_gap = (usable - visible) // gap_count
+                extra = (usable - visible) - base_gap * gap_count
+            else:
+                base_gap = 0
+                extra = 0
+            half = visible // 2
+            view_start = max(0, self.cursor - half)
+            view_end = min(n, view_start + visible)
+            if view_end == n:
+                view_start = max(0, n - visible)
+            if view_start == 0:
+                view_end = min(n, visible)
 
         # Scroll indicators
         has_left_overflow = view_start > 0
@@ -249,7 +267,13 @@ class TimelineWidget(Widget, can_focus=True):
             """Get gap width after tick at visual index vi. Distributes extra chars evenly."""
             if vi >= view_count - 1:
                 return 0
-            return base_gap + (1 if vi < extra else 0)
+            # Bresenham-style even distribution of extra gaps across all ticks
+            if extra > 0 and view_count > 1:
+                # Tick vi gets an extra char if floor((vi+1)*extra/slots) > floor(vi*extra/slots)
+                slots = view_count - 1
+                has_extra = ((vi + 1) * extra // slots) > (vi * extra // slots)
+                return base_gap + (1 if has_extra else 0)
+            return base_gap
 
         # Helper to render a row across the visible window
         def _render_row(char_fn):

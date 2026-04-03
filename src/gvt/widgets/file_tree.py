@@ -59,6 +59,8 @@ class FileTreeWidget(Widget, can_focus=True):
         self.untracked_files = untracked_files or []
         self._tree: Tree[str] | None = None
         self._untracked_set: set[str] = set(self.untracked_files)
+        self._saved_expand_state: set[str] = set()
+        self._restoring: bool = False
         # Pre-group files by directory for lazy loading
         self._dir_children: dict[str, tuple[list[str], list[str]]] = {}  # dir -> (subdirs, files)
         self._loaded_dirs: set[str] = set()  # directories whose children are already in the tree
@@ -185,6 +187,17 @@ class FileTreeWidget(Widget, can_focus=True):
         else:
             self._populate_node(node, data, self._dir_children, self._loaded_dirs)
 
+        # Auto-save expand state after lazy load
+        if not self._restoring:
+            self._saved_expand_state = self.save_expand_state()
+
+    @on(Tree.NodeCollapsed)
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+        """Save expand state when a node is collapsed."""
+        event.stop()
+        if not self._restoring:
+            self._saved_expand_state = self.save_expand_state()
+
     def action_cursor_down(self) -> None:
         if self._tree:
             self._tree.action_cursor_down()
@@ -230,24 +243,41 @@ class FileTreeWidget(Widget, can_focus=True):
         return expanded
 
     def restore_expand_state(self, expanded: set[str]) -> None:
-        """Restore previously saved expand state."""
-        if self._tree:
-            def _walk(node):
-                if node.allow_expand:
-                    key = str(node.data) if node.data else str(node.label)
-                    if key in expanded:
-                        node.expand()
-                    else:
-                        node.collapse()
-                for child in node.children:
-                    _walk(child)
-            _walk(self._tree.root)
-            # Always keep root expanded
+        """Restore previously saved expand state, triggering lazy loads as needed."""
+        if not self._tree:
+            return
+        self._restoring = True
+        try:
+            def _restore(node):
+                if not node.allow_expand:
+                    return
+                key = str(node.data) if node.data else str(node.label)
+                if key in expanded:
+                    # Directly populate children (idempotent) before expanding
+                    data = node.data
+                    if data and isinstance(data, str):
+                        if data == "__untracked_header__":
+                            self._populate_node(node, "__ut__", self._ut_dir_children, self._loaded_ut_dirs, is_untracked=True)
+                            self._populate_node(node, "", self._ut_dir_children, self._loaded_ut_dirs, is_untracked=True)
+                        elif data.startswith("__ut__/"):
+                            self._populate_node(node, data, self._ut_dir_children, self._loaded_ut_dirs, is_untracked=True)
+                        else:
+                            self._populate_node(node, data, self._dir_children, self._loaded_dirs)
+                    node.expand()
+                    for child in node.children:
+                        _restore(child)
+                else:
+                    node.collapse()
+            _restore(self._tree.root)
             self._tree.root.expand()
+        finally:
+            self._restoring = False
 
     def on_show(self) -> None:
-        """Re-expand root when the widget becomes visible (e.g. after modal closes)."""
-        if self._tree:
+        """Restore expand state when the widget becomes visible (e.g. after modal closes)."""
+        if self._tree and self._saved_expand_state:
+            self.restore_expand_state(self._saved_expand_state)
+        elif self._tree:
             self._tree.root.expand()
 
     def focus(self, scroll_visible: bool = True) -> Widget:
