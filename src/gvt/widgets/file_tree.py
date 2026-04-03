@@ -17,7 +17,16 @@ COLOR_UNTRACKED = "#e0af68"
 
 
 class FileSelected(Message):
-    """Posted when a file is selected in the tree."""
+    """Posted when a file is selected in the tree (Enter)."""
+
+    def __init__(self, path: str, tracked: bool = True) -> None:
+        self.path = path
+        self.tracked = tracked
+        super().__init__()
+
+
+class FileHighlighted(Message):
+    """Posted when cursor moves over a file in the tree (debounced)."""
 
     def __init__(self, path: str, tracked: bool = True) -> None:
         self.path = path

@@ -218,13 +218,15 @@ class TimelineWidget(Widget, can_focus=True):
 
         # Build tick display rows
         n = len(self.commits)
-        if n <= width:
-            spacing = max(1, width // max(n, 1))
+        if n <= width and n > 0:
+            base_gap = width // n - 1  # gap chars between ticks (excluding the tick itself)
+            extra = width - n * (base_gap + 1)  # leftover chars to distribute
             view_start = 0
             view_end = n
-        else:
-            # More commits than width — show a window centered on cursor, spacing=1
-            spacing = 1
+        elif n > 0:
+            # More commits than width — show a window centered on cursor
+            base_gap = 0
+            extra = 0
             half = width // 2
             view_start = max(0, self.cursor - half)
             view_end = min(n, view_start + width)
@@ -232,10 +234,22 @@ class TimelineWidget(Widget, can_focus=True):
                 view_start = max(0, n - width)
             if view_start == 0:
                 view_end = min(n, width)
+        else:
+            base_gap = 0
+            extra = 0
+            view_start = 0
+            view_end = 0
 
         # Scroll indicators
         has_left_overflow = view_start > 0
         has_right_overflow = view_end < n
+        view_count = view_end - view_start
+
+        def _gap_for(vi: int) -> int:
+            """Get gap width after tick at visual index vi. Distributes extra chars evenly."""
+            if vi >= view_count - 1:
+                return 0
+            return base_gap + (1 if vi < extra else 0)
 
         # Helper to render a row across the visible window
         def _render_row(char_fn):
@@ -245,11 +259,12 @@ class TimelineWidget(Widget, can_focus=True):
             for vi, i in enumerate(range(view_start, view_end)):
                 char, style = char_fn(i)
                 text.append(char, style=style)
-                if spacing > 1 and vi < (view_end - view_start) - 1:
+                gap = _gap_for(vi)
+                if gap > 0:
                     in_range = has_range and range_lo <= i <= range_hi
                     gap_char = "─" if in_range and i < range_hi else " "
                     gap_style = f"{COLOR_DIM} on {COLOR_RANGE}" if in_range and i < range_hi else ""
-                    text.append(gap_char * (spacing - 1), style=gap_style)
+                    text.append(gap_char * gap, style=gap_style)
             if has_right_overflow:
                 text.append("▶", style=COLOR_DIM)
             text.append("\n")

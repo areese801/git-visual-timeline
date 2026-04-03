@@ -52,15 +52,22 @@ def main():
         initial_file = os.path.relpath(os.path.abspath(args.file), repo_root)
 
     import signal
+    import subprocess
 
     def _cleanup_terminal(signum, frame):
         """Restore terminal on SIGTERM/SIGINT."""
-        # Reset terminal to sane state
-        sys.stdout.write("\033[?1049l")  # exit alternate screen
-        sys.stdout.write("\033[?25h")    # show cursor
-        sys.stdout.write("\033[0m")      # reset colors
-        sys.stdout.flush()
-        sys.exit(128 + signum)
+        try:
+            # Restore terminal mode first
+            subprocess.run(["stty", "sane"], check=False)
+            # Then reset escape sequences
+            sys.stdout.write("\033[?1049l")  # exit alternate screen
+            sys.stdout.write("\033[?25h")    # show cursor
+            sys.stdout.write("\033[0m")      # reset colors
+            sys.stdout.write("\033c")        # full terminal reset
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(128 + signum)
 
     signal.signal(signal.SIGTERM, _cleanup_terminal)
 
