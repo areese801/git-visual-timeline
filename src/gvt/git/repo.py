@@ -57,46 +57,82 @@ class GitRepo:
     def get_file_commits(self, path: str) -> list[CommitInfo]:
         """
         Get all commits that touched a file, ordered oldest-first.
+        Uses git log directly to avoid gitpython object parsing bugs.
         """
         rel_path = self._to_relative(path)
-        commits = []
 
-        # Build a map of commit hash -> ref names for decoration
+        # Build ref map
         ref_map: dict[str, list[str]] = {}
-        for ref in self.repo.refs:
-            try:
-                sha = ref.commit.hexsha
-                ref_map.setdefault(sha, []).append(ref.name)
-            except Exception:
-                pass
+        try:
+            for ref in self.repo.refs:
+                try:
+                    sha = ref.commit.hexsha
+                    ref_map.setdefault(sha, []).append(ref.name)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-        for commit in self.repo.iter_commits(paths=rel_path):
+        # Use git log with --numstat for stats, avoiding gitpython's object parser
+        output = self.repo.git.log(
+            "--format=---GVT_START---%n%H%n%at%n%an%n%s",
+            "--numstat",
+            "--follow",
+            "--", rel_path,
+        )
+
+        if not output:
+            return []
+
+        commits = []
+        chunks = output.split("---GVT_START---")
+
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+
+            lines = chunk.split("\n")
+            if len(lines) < 4:
+                continue
+
+            hexsha = lines[0].strip()
+            if not hexsha or len(hexsha) != 40:
+                continue
+
+            try:
+                timestamp = int(lines[1].strip())
+            except (ValueError, IndexError):
+                continue
+
+            author = lines[2].strip()
+            subject = lines[3].strip()
+
+            # Remaining lines are numstat (tab-separated: adds, dels, filename)
             additions = 0
             deletions = 0
-            try:
-                stats = commit.stats.files
-                # Try both the relative path and possible renames
-                for file_path, file_stats in stats.items():
-                    if file_path == rel_path or file_path.endswith("/" + os.path.basename(rel_path)):
-                        additions = file_stats.get("insertions", 0)
-                        deletions = file_stats.get("deletions", 0)
+            for ns_line in [l.strip() for l in lines[4:] if l.strip()]:
+                parts = ns_line.split("\t")
+                if len(parts) >= 3:
+                    fname = parts[2]
+                    if fname == rel_path or fname.endswith("/" + os.path.basename(rel_path)):
+                        try:
+                            additions = int(parts[0]) if parts[0] != "-" else 0
+                            deletions = int(parts[1]) if parts[1] != "-" else 0
+                        except ValueError:
+                            pass
                         break
-            except Exception:
-                pass
 
-            # Collect refs and also extract branch names from merge commit messages
-            refs_list = ref_map.get(commit.hexsha, [])
-            refs_str = " ".join(refs_list)
-
+            refs_list = ref_map.get(hexsha, [])
             commits.append(
                 CommitInfo(
-                    hexsha=commit.hexsha,
-                    date=datetime.fromtimestamp(commit.committed_date, tz=timezone.utc),
-                    author=str(commit.author),
-                    message=commit.message.strip(),
+                    hexsha=hexsha,
+                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    author=author,
+                    message=subject,
                     additions=additions,
                     deletions=deletions,
-                    refs=refs_str,
+                    refs=" ".join(refs_list),
                 )
             )
 
@@ -107,34 +143,72 @@ class GitRepo:
     def get_all_commits(self, max_count: int = 500) -> list[CommitInfo]:
         """
         Get recent commits across the entire repo (not file-specific).
-        Returns newest-first for search display.
+        Uses git log directly. Returns newest-first for search display.
         """
         ref_map: dict[str, list[str]] = {}
-        for ref in self.repo.refs:
-            try:
-                sha = ref.commit.hexsha
-                ref_map.setdefault(sha, []).append(ref.name)
-            except Exception:
-                pass
+        try:
+            for ref in self.repo.refs:
+                try:
+                    sha = ref.commit.hexsha
+                    ref_map.setdefault(sha, []).append(ref.name)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        output = self.repo.git.log(
+            f"--max-count={max_count}",
+            "--format=---GVT_START---%n%H%n%at%n%an%n%s",
+            "--shortstat",
+        )
+
+        if not output:
+            return []
 
         commits = []
-        for commit in self.repo.iter_commits(max_count=max_count):
+        chunks = output.split("---GVT_START---")
+
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+
+            lines = chunk.split("\n")
+            if len(lines) < 4:
+                continue
+
+            hexsha = lines[0].strip()
+            if not hexsha or len(hexsha) != 40:
+                continue
+
+            try:
+                timestamp = int(lines[1].strip())
+            except (ValueError, IndexError):
+                continue
+
+            author = lines[2].strip()
+            subject = lines[3].strip()
+
+            # Parse shortstat line (e.g. " 3 files changed, 10 insertions(+), 5 deletions(-)")
             total_adds = 0
             total_dels = 0
-            try:
-                for file_stats in commit.stats.files.values():
-                    total_adds += file_stats.get("insertions", 0)
-                    total_dels += file_stats.get("deletions", 0)
-            except Exception:
-                pass
+            for line in lines[4:]:
+                if "insertion" in line or "deletion" in line:
+                    import re
+                    add_match = re.search(r"(\d+) insertion", line)
+                    del_match = re.search(r"(\d+) deletion", line)
+                    if add_match:
+                        total_adds = int(add_match.group(1))
+                    if del_match:
+                        total_dels = int(del_match.group(1))
 
-            refs_list = ref_map.get(commit.hexsha, [])
+            refs_list = ref_map.get(hexsha, [])
             commits.append(
                 CommitInfo(
-                    hexsha=commit.hexsha,
-                    date=datetime.fromtimestamp(commit.committed_date, tz=timezone.utc),
-                    author=str(commit.author),
-                    message=commit.message.strip(),
+                    hexsha=hexsha,
+                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    author=author,
+                    message=subject,
                     additions=total_adds,
                     deletions=total_dels,
                     refs=" ".join(refs_list),
