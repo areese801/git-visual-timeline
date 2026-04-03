@@ -96,7 +96,7 @@ class CommitSearchModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="commit-search-container"):
-            yield Label("Search Commits (type to filter, Enter to select)", id="commit-search-title")
+            yield Label("Search Commits (type to filter, Tab/Shift+Tab to navigate, Enter to select)", id="commit-search-title")
             yield Input(placeholder="Search commit messages...", id="commit-search-input")
             yield Vertical(id="commit-search-results")
 
@@ -155,13 +155,12 @@ class CommitSearchModal(ModalScreen):
             results.mount(label)
 
     def on_key(self, event) -> None:
-        # Don't capture j/k when input is focused (user is typing)
         input_focused = self.query_one("#commit-search-input", Input).has_focus
-        if event.key == "down" or (event.key == "j" and not input_focused):
+        if event.key == "down" or event.key == "ctrl+n" or event.key == "tab" or (event.key == "j" and not input_focused):
             self.selected_idx = min(self.selected_idx + 1, len(self.filtered) - 1)
             self._update_results()
             event.prevent_default()
-        elif event.key == "up" or (event.key == "k" and not input_focused):
+        elif event.key == "up" or event.key == "ctrl+p" or event.key == "shift+tab" or (event.key == "k" and not input_focused):
             self.selected_idx = max(self.selected_idx - 1, 0)
             self._update_results()
             event.prevent_default()
@@ -222,7 +221,7 @@ class FileSearchModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="file-search-container"):
-            yield Label("Search Files (type to filter, Enter to select)", id="file-search-title")
+            yield Label("Search Files (type to filter, Tab/Shift+Tab to navigate, Enter to select)", id="file-search-title")
             yield Input(placeholder="Search files...", id="file-search-input")
             yield Vertical(id="file-search-results")
 
@@ -276,11 +275,11 @@ class FileSearchModal(ModalScreen):
 
     def on_key(self, event) -> None:
         input_focused = self.query_one("#file-search-input", Input).has_focus
-        if event.key == "down" or (event.key == "j" and not input_focused):
+        if event.key == "down" or event.key == "ctrl+n" or event.key == "tab" or (event.key == "j" and not input_focused):
             self.selected_idx = min(self.selected_idx + 1, len(self.filtered) - 1)
             self._update_results()
             event.prevent_default()
-        elif event.key == "up" or (event.key == "k" and not input_focused):
+        elif event.key == "up" or event.key == "ctrl+p" or event.key == "shift+tab" or (event.key == "k" and not input_focused):
             self.selected_idx = max(self.selected_idx - 1, 0)
             self._update_results()
             event.prevent_default()
@@ -424,11 +423,11 @@ class CommitFilesModal(ModalScreen):
             results.mount(label)
 
     def on_key(self, event) -> None:
-        if event.key == "down" or event.key == "j":
+        if event.key == "down" or event.key == "j" or event.key == "ctrl+n" or event.key == "tab":
             self.selected_idx = min(self.selected_idx + 1, len(self.files) - 1)
             self._update_results()
             event.prevent_default()
-        elif event.key == "up" or event.key == "k":
+        elif event.key == "up" or event.key == "k" or event.key == "ctrl+p" or event.key == "shift+tab":
             self.selected_idx = max(self.selected_idx - 1, 0)
             self._update_results()
             event.prevent_default()
@@ -664,11 +663,11 @@ class TimeFilterModal(ModalScreen):
             results.mount(static)
 
     def on_key(self, event) -> None:
-        if event.key == "down" or event.key == "j":
+        if event.key == "down" or event.key == "j" or event.key == "ctrl+n" or event.key == "tab":
             self.selected_idx = min(self.selected_idx + 1, len(self.PRESETS) - 1)
             self._update_presets()
             event.prevent_default()
-        elif event.key == "up" or event.key == "k":
+        elif event.key == "up" or event.key == "k" or event.key == "ctrl+p" or event.key == "shift+tab":
             self.selected_idx = max(self.selected_idx - 1, 0)
             self._update_presets()
             event.prevent_default()

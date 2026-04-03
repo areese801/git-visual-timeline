@@ -73,3 +73,5 @@ def main():
 
     app = GVTApp(repo_path=repo.working_tree_dir, initial_file=initial_file)
     app.run()
+    # Force exit after app.run() returns — background worker threads may linger
+    os._exit(0)

@@ -20,9 +20,10 @@ PANE_SHORTCUTS = {
     "timeline-widget": [
         ("h/l", "move"),
         ("x", "pin"),
-        ("X", "snap pin"),
-        ("t", "time filter"),
-        ("c", "search commits"),
+        ("X", "snap"),
+        ("0/$", "first/last"),
+        ("t", "filter"),
+        ("c", "commits"),
     ],
     "commit-bar": [
         ("j/k", "switch row"),
@@ -30,12 +31,12 @@ PANE_SHORTCUTS = {
     ],
     "diff-view": [
         ("j/k", "scroll"),
-        ("n/p", "next/prev hunk"),
+        ("n/p", "hunks"),
+        ("/", "search"),
         ("w", "whole file"),
         ("d", "side-by-side"),
         ("b", "blame"),
         ("+/-", "context"),
-        ("/", "search"),
     ],
     "changed-files": [
         ("j/k", "navigate"),
@@ -47,6 +48,8 @@ GLOBAL_SHORTCUTS = [
     ("1-5", "panes"),
     ("c", "commits"),
     ("f", "files"),
+    ("y", "copy hash"),
+    ("e", "editor"),
     ("?", "help"),
     ("q", "quit"),
 ]

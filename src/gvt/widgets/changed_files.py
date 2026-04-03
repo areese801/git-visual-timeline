@@ -79,8 +79,22 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
             else:
                 line.append("  ")
 
-            line.append(file_path, style=COLOR_TEXT if not is_selected else f"bold {COLOR_TEXT}")
-            line.append("  ", style="")
+            # Right-align stats, truncate filename to fit
+            stats = f"+{adds} -{dels}"
+            prefix_len = 2  # "▸ " or "  "
+            stats_len = len(stats) + 2  # 2 for padding
+            pane_width = self.size.width if self.size.width > 0 else 200
+            avail = max(10, pane_width - prefix_len - stats_len)
+
+            if len(file_path) > avail:
+                display_path = file_path[:avail - 1] + "…"
+            else:
+                display_path = file_path
+
+            line.append(display_path, style=COLOR_TEXT if not is_selected else f"bold {COLOR_TEXT}")
+            # Pad to push stats to the right
+            pad = max(1, avail - len(display_path) + 2)
+            line.append(" " * pad)
             line.append(f"+{adds}", style=COLOR_GREEN)
             line.append(f" -{dels}", style=COLOR_RED)
 

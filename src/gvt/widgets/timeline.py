@@ -276,10 +276,13 @@ class TimelineWidget(Widget, can_focus=True):
             return base_gap
 
         # Helper to render a row across the visible window
-        def _render_row(char_fn):
+        def _render_row(char_fn, show_arrows=False):
             """char_fn(i) -> (char, style) for commit index i."""
             if has_left_overflow:
-                text.append("◀", style=COLOR_DIM)
+                if show_arrows:
+                    text.append("◀", style=COLOR_DIM)
+                else:
+                    text.append(" ")
             for vi, i in enumerate(range(view_start, view_end)):
                 char, style = char_fn(i)
                 text.append(char, style=style)
@@ -290,7 +293,10 @@ class TimelineWidget(Widget, can_focus=True):
                     gap_style = f"{COLOR_DIM} on {COLOR_RANGE}" if in_range and i < range_hi else ""
                     text.append(gap_char * gap, style=gap_style)
             if has_right_overflow:
-                text.append("▶", style=COLOR_DIM)
+                if show_arrows:
+                    text.append("▶", style=COLOR_DIM)
+                else:
+                    text.append(" ")
             text.append("\n")
 
         # WIP label row above the ticks
@@ -302,7 +308,8 @@ class TimelineWidget(Widget, can_focus=True):
                 return (" ", "")
             _render_row(_wip_row)
 
-        # Tick rows
+        # Tick rows — show arrow on the middle row only
+        mid_row = (max_tick_h + 1) // 2
         for row in range(max_tick_h, 0, -1):
             def _tick_row(i, _row=row):
                 commit = self.commits[i]
@@ -327,7 +334,7 @@ class TimelineWidget(Widget, can_focus=True):
                 elif in_range:
                     return ("·", f"{COLOR_DIM} on {COLOR_RANGE}")
                 return (" ", "")
-            _render_row(_tick_row)
+            _render_row(_tick_row, show_arrows=(row == mid_row))
 
         # Indicator row
         def _indicator_row(i):
@@ -343,17 +350,34 @@ class TimelineWidget(Widget, can_focus=True):
             return (" ", COLOR_DIM)
         _render_row(_indicator_row)
 
-        # Label row
-        def _label_row(i):
+        # Label row — with "◀more" / "more▶" text at edges
+        if has_left_overflow:
+            text.append("◀", style=f"bold {COLOR_DIM}")
+        elif has_right_overflow:
+            text.append(" ")
+        for vi, i in enumerate(range(view_start, view_end)):
             is_wip = self.commits[i].is_wip
             if i == self.cursor:
-                return ("▸", f"bold {COLOR_WIP}" if is_wip else f"bold {COLOR_CURSOR}")
+                char = "▸"
+                style = f"bold {COLOR_WIP}" if is_wip else f"bold {COLOR_CURSOR}"
             elif has_range and i == self.pin_start:
-                return ("✕", f"bold {COLOR_PIN_START}")
+                char = "✕"
+                style = f"bold {COLOR_PIN_START}"
             elif has_range and self.pin_end is not None and i == self.pin_end:
-                return ("✕", f"bold {COLOR_PIN_END}")
-            return ("·", COLOR_DIM)
-        _render_row(_label_row)
+                char = "✕"
+                style = f"bold {COLOR_PIN_END}"
+            else:
+                char = "·"
+                style = COLOR_DIM
+            text.append(char, style=style)
+            gap = _gap_for(vi)
+            if gap > 0:
+                text.append(" " * gap)
+        if has_right_overflow:
+            text.append("▶", style=f"bold {COLOR_DIM}")
+        elif has_left_overflow:
+            text.append(" ")
+        text.append("\n")
 
         return text
 
