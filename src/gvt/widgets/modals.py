@@ -723,6 +723,8 @@ class HelpModal(ModalScreen):
                 ("c", "Commit search"),
                 ("f / Ctrl+P", "File search"),
                 ("?", "This help"),
+                ("y/Y", "Copy short/full commit hash"),
+                ("e", "Open file in $EDITOR"),
                 ("q / Esc", "Quit"),
             ]),
             ("File Tree [1]", [

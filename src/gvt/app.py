@@ -14,7 +14,7 @@ from textual.widget import Widget
 
 from gvt.git.cache import DiffCache
 from gvt.git.repo import CommitInfo, GitRepo
-from gvt.widgets.changed_files import ChangedFilesWidget, ChangedFileSelected
+from gvt.widgets.changed_files import ChangedFilesWidget, ChangedFileSelected, ChangedFileHighlighted
 from gvt.widgets.commit_bar import CommitMessageBar, ShowCommitDetail
 from gvt.widgets.diff_view import DiffContextChanged, DiffViewWidget
 from gvt.widgets.file_tree import FileSelected, FileTreeWidget
@@ -60,6 +60,9 @@ class GVTApp(App):
         Binding("p", "global_prev_hunk", "Prev hunk", show=False),
         Binding("N", "global_prev_hunk", "Prev hunk", show=False),
         Binding("P", "global_next_hunk", "Next hunk", show=False),
+        Binding("y", "copy_short_hash", "Copy hash", show=False),
+        Binding("Y", "copy_full_hash", "Copy full hash", show=False),
+        Binding("e", "open_in_editor", "Open in editor", show=False),
         Binding("ctrl+h", "focus_left", "Focus left", show=False),
         Binding("ctrl+l", "focus_right", "Focus right", show=False),
         Binding("ctrl+k", "focus_up", "Focus up", show=False),
@@ -177,6 +180,10 @@ class GVTApp(App):
     def on_changed_file_selected(self, event: ChangedFileSelected) -> None:
         self._save_last_file(event.path)
         self._load_file(event.path)
+
+    @on(ChangedFileHighlighted)
+    def on_changed_file_highlighted(self, event: ChangedFileHighlighted) -> None:
+        self.query_one("#changed-files-pane", Container).border_title = f"[5] {event.path}"
 
     def _load_untracked_file(self, file_path: str) -> None:
         """Show an untracked file as a read-only preview."""
@@ -677,6 +684,50 @@ class GVTApp(App):
             commit.author, commit.short_hash, commit.date,
             contributors, self.current_file,
         ))
+
+    def action_copy_short_hash(self) -> None:
+        if not self.current_commits:
+            return
+        timeline = self.query_one("#timeline-widget", TimelineWidget)
+        commit = self.current_commits[timeline.cursor]
+        self._copy_to_clipboard(commit.short_hash)
+
+    def action_copy_full_hash(self) -> None:
+        if not self.current_commits:
+            return
+        timeline = self.query_one("#timeline-widget", TimelineWidget)
+        commit = self.current_commits[timeline.cursor]
+        self._copy_to_clipboard(commit.hexsha)
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        import subprocess
+        import shutil
+        try:
+            if shutil.which("pbcopy"):
+                subprocess.run(["pbcopy"], input=text.encode(), check=True)
+            elif shutil.which("xclip"):
+                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+            elif shutil.which("xsel"):
+                subprocess.run(["xsel", "--clipboard", "--input"], input=text.encode(), check=True)
+            else:
+                self.notify("No clipboard tool found", timeout=2)
+                return
+            self.notify(f"Copied {text}", timeout=2)
+        except Exception:
+            self.notify("Failed to copy to clipboard", timeout=2)
+
+    def action_open_in_editor(self) -> None:
+        if not self.current_file:
+            return
+        import shutil
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vim"
+        file_path = os.path.join(self.repo_path, self.current_file)
+        self.suspend()
+        try:
+            import subprocess
+            subprocess.run([editor, file_path])
+        finally:
+            self.resume()
 
     @work(thread=True)
     def _load_blame(self, file_path: str, commit_sha: str) -> None:

@@ -23,6 +23,14 @@ class ChangedFileSelected(Message):
         super().__init__()
 
 
+class ChangedFileHighlighted(Message):
+    """Posted when cursor moves over a file (for updating pane title)."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        super().__init__()
+
+
 class ChangedFilesWidget(ScrollView, can_focus=True):
     """Compact scrollable list of files changed in the current commit."""
 
@@ -104,14 +112,19 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
         bg = Style(bgcolor="#1a1b26")
         return Strip([Segment(" " * self.size.width, bg)])
 
+    def _notify_highlight(self) -> None:
+        if self.files:
+            file_path, _, _ = self.files[self.selected_idx]
+            self.post_message(ChangedFileHighlighted(file_path))
+
     def action_cursor_down(self) -> None:
         if self.files and self.selected_idx < len(self.files) - 1:
             self.selected_idx += 1
             self._build_lines()
-            # Scroll to keep selection visible
             if self.selected_idx >= int(self.scroll_offset.y) + self.size.height:
                 self.scroll_to(y=self.selected_idx - self.size.height + 1, animate=False)
             self.refresh()
+            self._notify_highlight()
 
     def action_cursor_up(self) -> None:
         if self.files and self.selected_idx > 0:
@@ -120,8 +133,15 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
             if self.selected_idx < int(self.scroll_offset.y):
                 self.scroll_to(y=self.selected_idx, animate=False)
             self.refresh()
+            self._notify_highlight()
 
     def action_select_file(self) -> None:
         if self.files:
             file_path, _, _ = self.files[self.selected_idx]
             self.post_message(ChangedFileSelected(file_path))
+
+    def on_focus(self) -> None:
+        """Ensure the widget is ready for input immediately on focus."""
+        self._build_lines()
+        self.refresh()
+        self._notify_highlight()
