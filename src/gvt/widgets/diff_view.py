@@ -128,8 +128,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
                 self._hunk_positions.append(len(self._lines))
                 line.append(raw_line, style=f"bold {COLOR_HUNK}")
                 # Parse new file line number from @@ -a,b +c,d @@
-                import re
-                match = re.search(r"\+(\d+)", raw_line)
+                match = re_module.search(r"\+(\d+)", raw_line)
                 if match:
                     new_file_line = int(match.group(1)) - 1
             elif raw_line.startswith("+"):
@@ -165,8 +164,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
         for raw_line in diff.split("\n"):
             if raw_line.startswith("@@"):
                 # Parse @@ -a,b +c,d @@ to get new file line number
-                import re
-                match = re.search(r"\+(\d+)", raw_line)
+                match = re_module.search(r"\+(\d+)", raw_line)
                 if match:
                     new_line = int(match.group(1)) - 1
             elif raw_line.startswith("+"):
@@ -224,8 +222,6 @@ class DiffViewWidget(ScrollView, can_focus=True):
         if not diff:
             self._lines.append(Text("No diff to display", style=COLOR_DIM))
             return
-
-        import re
 
         # Parse diff into pairs of (old_line, new_line)
         pairs: list[tuple[str | None, str | None, str]] = []  # (left, right, type)

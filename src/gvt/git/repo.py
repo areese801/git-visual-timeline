@@ -221,8 +221,6 @@ class GitRepo:
         Get unified diff for a file between two commits.
         """
         rel_path = self._to_relative(path)
-        a = self.repo.commit(commit_a)
-        b = self.repo.commit(commit_b)
         # Use git diff directly for context line control
         diff_output = self.repo.git.diff(
             f"-U{context_lines}", commit_a, commit_b, "--", rel_path
@@ -312,18 +310,29 @@ class GitRepo:
         Returns list of (author_name, commit_count).
         """
         rel_path = self._to_relative(path)
-        # email -> (best_name, count)
+        output = self.repo.git.log(
+            "--format=%ae%n%an",
+            "--follow",
+            "--", rel_path,
+        )
+        if not output:
+            return []
+
+        lines = output.strip().split("\n")
         by_email: dict[str, tuple[str, int]] = {}
-        for commit in self.repo.iter_commits(paths=rel_path):
-            email = commit.author.email
-            name = str(commit.author)
+        # Lines come in pairs: email, then name
+        for i in range(0, len(lines) - 1, 2):
+            email = lines[i].strip()
+            name = lines[i + 1].strip()
+            if not email:
+                continue
             if email in by_email:
                 prev_name, prev_count = by_email[email]
-                # Keep the longer name (more likely to be the full name)
                 best_name = name if len(name) > len(prev_name) else prev_name
                 by_email[email] = (best_name, prev_count + 1)
             else:
                 by_email[email] = (name, 1)
+
         result = [(name, count) for name, count in by_email.values()]
         return sorted(result, key=lambda x: x[1], reverse=True)
 

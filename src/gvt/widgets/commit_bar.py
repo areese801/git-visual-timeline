@@ -80,7 +80,7 @@ class CommitMessageBar(Widget, can_focus=True):
 
         # Truncate message
         first_line = commit.first_line
-        max_msg_len = max(20, 60)
+        max_msg_len = max(20, self.size.width - 50) if self.size.width > 0 else 60
         if len(first_line) > max_msg_len:
             row.append(first_line[:max_msg_len] + "...", style=COLOR_MSG)
         else:
