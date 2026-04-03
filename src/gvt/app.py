@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -53,6 +54,7 @@ class GVTApp(App):
         Binding("t", "time_filter", "Time filter", show=False),
         Binding("w", "toggle_whole_file", "Whole file", show=False),
         Binding("b", "toggle_blame", "Blame", show=False),
+        Binding("d", "toggle_side_by_side", "Side-by-side diff", show=False),
         Binding("B", "flash_last_author", "Last author", show=False),
         Binding("n", "global_next_hunk", "Next hunk", show=False),
         Binding("p", "global_prev_hunk", "Prev hunk", show=False),
@@ -76,6 +78,7 @@ class GVTApp(App):
         self._q_timer = None
         self._saved_tree_state: set[str] = set()
         self._all_commits_cache: list[CommitInfo] | None = None
+        self._preload_worker = None
         self._pane_order = [
             "file-tree-widget",
             "timeline-widget",
@@ -125,9 +128,14 @@ class GVTApp(App):
             rel_path = self.initial_file
             if os.path.isabs(rel_path):
                 rel_path = os.path.relpath(rel_path, self.repo_path)
+            self._save_last_file(rel_path)
             self._load_file(rel_path)
         else:
-            self.query_one("#file-tree-widget", FileTreeWidget).focus()
+            last = self._read_last_file()
+            if last and os.path.isfile(os.path.join(self.repo_path, last)):
+                self._load_file(last)
+            else:
+                self.query_one("#file-tree-widget", FileTreeWidget).focus()
 
     def on_descendant_focus(self, event) -> None:
         """Track which pane is focused and update status bar legend."""
@@ -138,15 +146,36 @@ class GVTApp(App):
             self.query_one(GVTStatusBar).set_focused_pane(widget_id)
 
 
+    def _last_file_path(self) -> Path:
+        """Return the path to the last-file marker for this repo."""
+        repo_hash = hashlib.md5(self.repo_path.encode()).hexdigest()
+        return Path.home() / ".config" / "gvt" / f"{repo_hash}.last"
+
+    def _save_last_file(self, rel_path: str) -> None:
+        """Persist the last-selected file for this repo."""
+        p = self._last_file_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(rel_path)
+
+    def _read_last_file(self) -> str | None:
+        """Read the last-selected file for this repo, or None."""
+        p = self._last_file_path()
+        if p.is_file():
+            text = p.read_text().strip()
+            return text if text else None
+        return None
+
     @on(FileSelected)
     def on_file_selected(self, event: FileSelected) -> None:
         if event.tracked:
+            self._save_last_file(event.path)
             self._load_file(event.path)
         else:
             self._load_untracked_file(event.path)
 
     @on(ChangedFileSelected)
     def on_changed_file_selected(self, event: ChangedFileSelected) -> None:
+        self._save_last_file(event.path)
         self._load_file(event.path)
 
     def _load_untracked_file(self, file_path: str) -> None:
@@ -382,6 +411,51 @@ class GVTApp(App):
                 full_content = self.git_repo.get_file_at_commit(file_path, right.hexsha)
             self.call_from_thread(diff_view.set_full_file, full_content, diff)
 
+        # Fire preload for adjacent diffs after main diff is done
+        timeline = self.query_one("#timeline-widget", TimelineWidget)
+        cursor_idx = timeline.cursor
+        self.call_from_thread(self._preload_adjacent_diffs, file_path, cursor_idx, context)
+
+    @work(thread=True, exclusive=True, group="preload")
+    def _preload_adjacent_diffs(self, file_path: str, cursor_idx: int, context: int) -> None:
+        """Preload diffs for adjacent timeline positions into the cache."""
+        if not self.current_commits or len(self.current_commits) < 2:
+            return
+
+        cache_key_suffix = f"_ctx{context}"
+        commits = self.current_commits
+
+        # Adjacent pairs to preload: (N-1 → N) and (N → N+1)
+        pairs = []
+        if cursor_idx > 0:
+            pairs.append((cursor_idx - 1, cursor_idx))
+        if cursor_idx < len(commits) - 1:
+            pairs.append((cursor_idx, cursor_idx + 1))
+
+        for left_idx, right_idx in pairs:
+            # Check if we've been superseded (cursor moved)
+            if self.current_file != file_path:
+                return
+
+            left = commits[left_idx]
+            right = commits[right_idx]
+
+            if left.hexsha == right.hexsha or left.is_wip or right.is_wip:
+                continue
+
+            left_key = left.hexsha + cache_key_suffix
+            if self.diff_cache.has(file_path, left_key, right.hexsha):
+                continue
+
+            self.diff_cache.get_or_compute(
+                file_path,
+                left_key,
+                right.hexsha,
+                lambda l=left, r=right: self.git_repo.get_diff(
+                    file_path, l.hexsha, r.hexsha, context_lines=context
+                ),
+            )
+
     @on(DiffContextChanged)
     def on_diff_context_changed(self, event: DiffContextChanged) -> None:
         if not self.current_file or not self.current_commits:
@@ -576,6 +650,13 @@ class GVTApp(App):
 
     def action_toggle_whole_file(self) -> None:
         self.query_one("#diff-view", DiffViewWidget).action_toggle_full_file()
+
+    def action_toggle_side_by_side(self) -> None:
+        diff_view = self.query_one("#diff-view", DiffViewWidget)
+        diff_view.action_toggle_side_by_side()
+        status_bar = self.query_one(GVTStatusBar)
+        status_bar.diff_mode = "side-by-side" if diff_view.side_by_side else "inline"
+        status_bar.refresh()
 
     def action_toggle_blame(self) -> None:
         diff_view = self.query_one("#diff-view", DiffViewWidget)

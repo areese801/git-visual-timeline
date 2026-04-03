@@ -35,7 +35,7 @@ class FileHighlighted(Message):
 
 
 class FileTreeWidget(Widget, can_focus=True):
-    """Full recursive directory tree with tracked and untracked sections."""
+    """Lazy-loading recursive directory tree with tracked and untracked sections."""
 
     BINDINGS = [
         ("j", "cursor_down", "Down"),
@@ -59,6 +59,52 @@ class FileTreeWidget(Widget, can_focus=True):
         self.untracked_files = untracked_files or []
         self._tree: Tree[str] | None = None
         self._untracked_set: set[str] = set(self.untracked_files)
+        # Pre-group files by directory for lazy loading
+        self._dir_children: dict[str, tuple[list[str], list[str]]] = {}  # dir -> (subdirs, files)
+        self._loaded_dirs: set[str] = set()  # directories whose children are already in the tree
+        self._build_dir_index(self.tracked_files, prefix="")
+        # Untracked index
+        self._ut_dir_children: dict[str, tuple[list[str], list[str]]] = {}
+        self._loaded_ut_dirs: set[str] = set()
+        self._build_dir_index(self.untracked_files, prefix="__ut__/", target=self._ut_dir_children)
+
+    def _build_dir_index(
+        self,
+        files: list[str],
+        prefix: str = "",
+        target: dict[str, tuple[list[str], list[str]]] | None = None,
+    ) -> None:
+        """Group flat file paths by their immediate parent directory."""
+        if target is None:
+            target = self._dir_children
+        dirs_seen: dict[str, set[str]] = {}  # parent -> set of child dir names
+        files_in: dict[str, list[str]] = {}  # parent -> list of file basenames (full paths)
+
+        for file_path in sorted(files):
+            parts = file_path.split("/")
+            # Register the file in its parent
+            if len(parts) == 1:
+                parent_key = prefix.rstrip("/") if prefix else ""
+                files_in.setdefault(parent_key, []).append(file_path)
+            else:
+                parent_key = prefix + "/".join(parts[:-1]) if prefix else "/".join(parts[:-1])
+                files_in.setdefault(parent_key, []).append(file_path)
+
+            # Register intermediate directories
+            for i in range(len(parts) - 1):
+                if i == 0:
+                    p_key = prefix.rstrip("/") if prefix else ""
+                else:
+                    p_key = prefix + "/".join(parts[:i]) if prefix else "/".join(parts[:i])
+                child_dir = prefix + "/".join(parts[: i + 1]) if prefix else "/".join(parts[: i + 1])
+                dirs_seen.setdefault(p_key, set()).add(child_dir)
+
+        # Consolidate into target
+        all_parents = set(dirs_seen.keys()) | set(files_in.keys())
+        for p in all_parents:
+            subdirs = sorted(dirs_seen.get(p, set()))
+            flist = files_in.get(p, [])
+            target[p] = (subdirs, flist)
 
     def compose(self):
         tree: Tree[str] = Tree(".", id="file-tree-inner")
@@ -66,60 +112,78 @@ class FileTreeWidget(Widget, can_focus=True):
         tree.guide_depth = 2
         self._tree = tree
 
-        # Build tree structure from flat file list
-        dirs: dict[str, TreeNode] = {}
-
-        def get_or_create_dir(parts: tuple[str, ...], parent: TreeNode) -> TreeNode:
-            key = "/".join(parts)
-            if key in dirs:
-                return dirs[key]
-            node = parent.add(parts[-1], data=key, expand=True)
-            node.allow_expand = True
-            dirs[key] = node
-            return node
-
-        for file_path in sorted(self.tracked_files):
-            parts = file_path.split("/")
-            if len(parts) == 1:
-                tree.root.add_leaf(parts[0], data=file_path)
-            else:
-                parent = tree.root
-                for i in range(len(parts) - 1):
-                    parent = get_or_create_dir(tuple(parts[: i + 1]), parent)
-                parent.add_leaf(parts[-1], data=file_path)
+        # Only add root-level items (lazy — children loaded on expand)
+        self._populate_node(tree.root, "", self._dir_children, self._loaded_dirs)
 
         # Add untracked section
         if self.untracked_files:
             untracked_label = Text("── Untracked ──", style=f"bold {COLOR_UNTRACKED}")
-            untracked_node = tree.root.add(untracked_label, data="__untracked_header__", expand=True)
+            untracked_node = tree.root.add(untracked_label, data="__untracked_header__", expand=False)
             untracked_node.allow_expand = True
-
-            # Reset dirs for untracked section
-            untracked_dirs: dict[str, TreeNode] = {}
-
-            def get_or_create_untracked_dir(parts: tuple[str, ...], parent: TreeNode) -> TreeNode:
-                key = "__ut__/" + "/".join(parts)
-                if key in untracked_dirs:
-                    return untracked_dirs[key]
-                label = Text(parts[-1], style=COLOR_DIM)
-                node = parent.add(label, data=key, expand=True)
-                node.allow_expand = True
-                untracked_dirs[key] = node
-                return node
-
-            for file_path in sorted(self.untracked_files):
-                parts = file_path.split("/")
-                label = Text(f"? {parts[-1]}", style=COLOR_DIM)
-                if len(parts) == 1:
-                    untracked_node.add_leaf(label, data=file_path)
-                else:
-                    parent = untracked_node
-                    for i in range(len(parts) - 1):
-                        parent = get_or_create_untracked_dir(tuple(parts[: i + 1]), parent)
-                    parent.add_leaf(label, data=file_path)
 
         tree.root.expand()
         yield tree
+
+    def _populate_node(
+        self,
+        parent_node: TreeNode,
+        dir_key: str,
+        index: dict[str, tuple[list[str], list[str]]],
+        loaded: set[str],
+        is_untracked: bool = False,
+    ) -> None:
+        """Add immediate children (subdirs + files) of dir_key to parent_node."""
+        if dir_key in loaded:
+            return
+        loaded.add(dir_key)
+
+        subdirs, files = index.get(dir_key, ([], []))
+
+        for subdir in subdirs:
+            # Display name is the last component
+            display_name = subdir.split("/")[-1]
+            if is_untracked:
+                label = Text(display_name, style=COLOR_DIM)
+            else:
+                label = display_name
+            node = parent_node.add(label, data=subdir, expand=False)
+            node.allow_expand = True
+
+        for file_path in files:
+            display_name = file_path.split("/")[-1]
+            if is_untracked:
+                label = Text(f"? {display_name}", style=COLOR_DIM)
+            else:
+                label = display_name
+            parent_node.add_leaf(label, data=file_path)
+
+    @on(Tree.NodeExpanded)
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        """Lazy-load children when a directory node is expanded."""
+        event.stop()
+        node = event.node
+        if not node.data or not isinstance(node.data, str):
+            return
+
+        data = node.data
+        if data == "__untracked_header__":
+            # Load untracked root children
+            self._populate_node(
+                node, "__ut__", self._ut_dir_children, self._loaded_ut_dirs, is_untracked=True
+            )
+            # Also handle case where prefix is empty
+            self._populate_node(
+                node, "", self._ut_dir_children, self._loaded_ut_dirs, is_untracked=True
+            )
+            return
+
+        # Check if it's an untracked directory
+        if data.startswith("__ut__/"):
+            self._populate_node(
+                node, data, self._ut_dir_children, self._loaded_ut_dirs, is_untracked=True
+            )
+        else:
+            self._populate_node(node, data, self._dir_children, self._loaded_dirs)
 
     def action_cursor_down(self) -> None:
         if self._tree:

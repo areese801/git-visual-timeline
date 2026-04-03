@@ -32,8 +32,10 @@ PANE_SHORTCUTS = {
         ("j/k", "scroll"),
         ("n/p", "next/prev hunk"),
         ("w", "whole file"),
+        ("d", "side-by-side"),
         ("b", "blame"),
         ("+/-", "context"),
+        ("/", "search"),
     ],
     "changed-files": [
         ("j/k", "navigate"),

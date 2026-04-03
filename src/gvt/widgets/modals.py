@@ -748,7 +748,9 @@ class HelpModal(ModalScreen):
                 ("n/p", "Next/prev hunk"),
                 ("+/- or m/l", "More/less context lines"),
                 ("w", "Toggle whole file view"),
+                ("d", "Toggle side-by-side diff"),
                 ("b", "Toggle inline blame"),
+                ("/", "Search in diff"),
             ]),
             ("Changed Files [5]", [
                 ("j/k/↑/↓", "Navigate"),

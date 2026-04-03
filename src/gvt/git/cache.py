@@ -44,6 +44,10 @@ class DiffCache:
             return self._cache[key]
         return None
 
+    def has(self, file_path: str, commit_a: str, commit_b: str) -> bool:
+        """Check if a diff is already cached."""
+        return (file_path, commit_a, commit_b) in self._cache
+
     def clear(self) -> None:
         self._cache.clear()
 

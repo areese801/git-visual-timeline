@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re as re_module
+
 from rich.text import Text
 from textual.message import Message
 from textual.reactive import reactive
@@ -19,6 +21,7 @@ COLOR_FLASH = "#3d3d6b"
 
 MODE_DIFF = "diff"
 MODE_FULL = "full"
+MODE_SIDE_BY_SIDE = "side_by_side"
 
 
 class DiffContextChanged(Message):
@@ -61,6 +64,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
         self._hunk_positions: list[int] = []
         self.context_lines: int = 3
         self.view_mode: str = MODE_DIFF
+        self.side_by_side: bool = False
         self._full_file_content: str = ""
         self._full_file_diff_lines: set[int] = set()
         self._full_file_add_lines: set[int] = set()
@@ -69,6 +73,13 @@ class DiffViewWidget(ScrollView, can_focus=True):
         self._flash_timer = None
         self.blame_enabled: bool = False
         self._blame_data: list[tuple[str, str, str]] = []  # (hash, author, date) per line
+        # Search state
+        self._search_mode: bool = False
+        self._search_pattern: re_module.Pattern | None = None
+        self._search_query: str = ""
+        self._search_match_lines: list[int] = []
+        self._search_match_idx: int = -1
+        self._search_highlight_lines: set[int] = set()
 
     def set_diff(self, diff: str) -> None:
         self.diff_text = diff
@@ -81,7 +92,9 @@ class DiffViewWidget(ScrollView, can_focus=True):
             self._render_full_file()
 
     def watch_diff_text(self, value: str) -> None:
-        if self.view_mode == MODE_DIFF:
+        if self.side_by_side and self.view_mode == MODE_DIFF:
+            self._render_side_by_side(value)
+        elif self.view_mode == MODE_DIFF:
             self._parse_diff(value)
         else:
             self._parse_diff_line_numbers(value)
@@ -203,6 +216,108 @@ class DiffViewWidget(ScrollView, can_focus=True):
         self.virtual_size = self.size.with_height(max(len(self._lines), 1))
         self.refresh()
 
+    def _render_side_by_side(self, diff: str) -> None:
+        """Parse unified diff into side-by-side columns."""
+        self._lines = []
+        self._hunk_positions = []
+
+        if not diff:
+            self._lines.append(Text("No diff to display", style=COLOR_DIM))
+            return
+
+        import re
+
+        # Parse diff into pairs of (old_line, new_line)
+        pairs: list[tuple[str | None, str | None, str]] = []  # (left, right, type)
+        old_buf: list[str] = []
+        new_buf: list[str] = []
+
+        def flush_buffers():
+            """Pair up old/new deletions and additions."""
+            max_len = max(len(old_buf), len(new_buf))
+            for i in range(max_len):
+                left = old_buf[i] if i < len(old_buf) else None
+                right = new_buf[i] if i < len(new_buf) else None
+                if left and right:
+                    pairs.append((left, right, "change"))
+                elif left:
+                    pairs.append((left, None, "del"))
+                else:
+                    pairs.append((None, right, "add"))
+            old_buf.clear()
+            new_buf.clear()
+
+        for raw_line in diff.split("\n"):
+            if raw_line.startswith("@@"):
+                flush_buffers()
+                pairs.append((raw_line, raw_line, "hunk"))
+            elif raw_line.startswith("-"):
+                old_buf.append(raw_line[1:])
+            elif raw_line.startswith("+"):
+                new_buf.append(raw_line[1:])
+            else:
+                flush_buffers()
+                # Context line (strip leading space)
+                content = raw_line[1:] if raw_line.startswith(" ") else raw_line
+                pairs.append((content, content, "context"))
+
+        flush_buffers()
+
+        # Render pairs
+        col_width = max(20, (self.size.width - 3) // 2)  # 3 for " │ "
+        divider = " │ "
+
+        # Header
+        header = Text()
+        header.append("  SIDE-BY-SIDE DIFF  ", style=f"bold {COLOR_HUNK}")
+        header.append("[d] back to inline  ", style=COLOR_DIM)
+        header.append("[+/-] context", style=COLOR_DIM)
+        self._lines.append(header)
+
+        for left, right, ptype in pairs:
+            line = Text()
+
+            if ptype == "hunk":
+                self._hunk_positions.append(len(self._lines))
+                # Show hunk header across full width
+                line.append(left[:col_width].ljust(col_width), style=f"bold {COLOR_HUNK}")
+                line.append(divider, style=COLOR_DIM)
+                line.append(right[:col_width].ljust(col_width), style=f"bold {COLOR_HUNK}")
+            elif ptype == "context":
+                line.append((left or "")[:col_width].ljust(col_width), style=COLOR_TEXT)
+                line.append(divider, style=COLOR_DIM)
+                line.append((right or "")[:col_width].ljust(col_width), style=COLOR_TEXT)
+            elif ptype == "del":
+                line.append((left or "")[:col_width].ljust(col_width), style=f"{COLOR_DEL_FG} on {COLOR_DEL_BG}")
+                line.append(divider, style=COLOR_DIM)
+                line.append(" " * col_width, style="")
+            elif ptype == "add":
+                line.append(" " * col_width, style="")
+                line.append(divider, style=COLOR_DIM)
+                line.append((right or "")[:col_width].ljust(col_width), style=f"{COLOR_ADD_FG} on {COLOR_ADD_BG}")
+            elif ptype == "change":
+                line.append((left or "")[:col_width].ljust(col_width), style=f"{COLOR_DEL_FG} on {COLOR_DEL_BG}")
+                line.append(divider, style=COLOR_DIM)
+                line.append((right or "")[:col_width].ljust(col_width), style=f"{COLOR_ADD_FG} on {COLOR_ADD_BG}")
+
+            self._lines.append(line)
+
+        self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+        self.refresh()
+
+    def action_toggle_side_by_side(self) -> None:
+        """Toggle between inline and side-by-side diff mode."""
+        self.side_by_side = not self.side_by_side
+        if self.view_mode == MODE_FULL:
+            self.view_mode = MODE_DIFF
+        if self.side_by_side:
+            self._render_side_by_side(self.diff_text)
+        else:
+            self._parse_diff(self.diff_text)
+            self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+        self.scroll_home(animate=False)
+        self.refresh()
+
     def set_blame(self, blame_data: list[tuple[str, str, str]]) -> None:
         """Set blame data (hash, author, date) per line of the newer file."""
         self._blame_data = blame_data
@@ -251,12 +366,39 @@ class DiffViewWidget(ScrollView, can_focus=True):
         from rich.style import Style
         from rich.segment import Segment
 
+        # Search input overlay at the bottom of the visible area
+        if self._search_mode and y == self.size.height - 1:
+            search_text = f"/{self._search_query}"
+            match_info = ""
+            if self._search_match_lines:
+                match_info = f"  [{self._search_match_idx + 1}/{len(self._search_match_lines)}]"
+            prompt = search_text + match_info
+            bar_style = Style(bgcolor="#24283b", color="#c0caf5")
+            segments = [Segment(prompt.ljust(self.size.width), bar_style)]
+            return Strip(segments)
+
         scroll_y = int(self.scroll_offset.y)
         line_idx = y + scroll_y
 
         if line_idx < len(self._lines):
             text = self._lines[line_idx]
             segments = list(text.render(self.app.console))
+
+            # Apply search highlight
+            if line_idx in self._search_highlight_lines:
+                hl_style = Style(bgcolor="#2a3a5a")
+                segments = [
+                    Segment(s.text, s.style + hl_style if s.style else hl_style, s.control)
+                    for s in segments
+                ]
+                # Extra highlight for current match
+                if self._search_match_lines and self._search_match_idx >= 0:
+                    if line_idx == self._search_match_lines[self._search_match_idx]:
+                        cur_style = Style(bgcolor="#3d4f7a")
+                        segments = [
+                            Segment(s.text, s.style + cur_style if s.style else cur_style, s.control)
+                            for s in segments
+                        ]
 
             # Apply flash if active
             if line_idx in self._flash_lines:
@@ -284,8 +426,6 @@ class DiffViewWidget(ScrollView, can_focus=True):
                     segments.append(Segment(" " * (self.size.width - content_width), flash_style))
 
             return Strip(segments)
-        from rich.style import Style
-        from rich.segment import Segment
         bg = Style(bgcolor="#1a1b26")
         return Strip([Segment(" " * self.size.width, bg)])
 
@@ -312,6 +452,10 @@ class DiffViewWidget(ScrollView, can_focus=True):
         self.refresh()
 
     def action_next_hunk(self) -> None:
+        # If search highlights are active, n goes to next match
+        if self._search_match_lines and not self._search_mode:
+            self._search_next()
+            return
         if not self._hunk_positions:
             return
         current_y = int(self.scroll_offset.y)
@@ -322,6 +466,10 @@ class DiffViewWidget(ScrollView, can_focus=True):
                 return
 
     def action_prev_hunk(self) -> None:
+        # If search highlights are active, N goes to prev match
+        if self._search_match_lines and not self._search_mode:
+            self._search_prev()
+            return
         if not self._hunk_positions:
             return
         current_y = int(self.scroll_offset.y)
@@ -351,6 +499,118 @@ class DiffViewWidget(ScrollView, can_focus=True):
             self._parse_diff(self.diff_text)
             self.virtual_size = self.size.with_height(max(len(self._lines), 1))
             self.refresh()
+
+    # --- Diff search ---
+
+    def action_start_search(self) -> None:
+        """Enter search mode — show input overlay at bottom of diff."""
+        self._search_mode = True
+        self._search_query = ""
+        self._search_pattern = None
+        self._search_match_lines = []
+        self._search_match_idx = -1
+        self._search_highlight_lines = set()
+        self.refresh()
+
+    def _apply_search(self, query: str) -> None:
+        """Compile regex and find matching lines."""
+        self._search_query = query
+        self._search_highlight_lines = set()
+        self._search_match_lines = []
+        self._search_match_idx = -1
+
+        if not query:
+            self._search_pattern = None
+            self.refresh()
+            return
+
+        try:
+            self._search_pattern = re_module.compile(query, re_module.IGNORECASE)
+        except re_module.error:
+            self._search_pattern = None
+            self.refresh()
+            return
+
+        for idx, line in enumerate(self._lines):
+            if self._search_pattern.search(line.plain):
+                self._search_match_lines.append(idx)
+                self._search_highlight_lines.add(idx)
+
+        # Jump to first match
+        if self._search_match_lines:
+            self._search_match_idx = 0
+            self.scroll_to(y=self._search_match_lines[0], animate=False)
+
+        self.refresh()
+
+    def _search_next(self) -> None:
+        """Jump to next search match."""
+        if not self._search_match_lines:
+            return
+        self._search_match_idx = (self._search_match_idx + 1) % len(self._search_match_lines)
+        self.scroll_to(y=self._search_match_lines[self._search_match_idx], animate=False)
+        self.refresh()
+
+    def _search_prev(self) -> None:
+        """Jump to previous search match."""
+        if not self._search_match_lines:
+            return
+        self._search_match_idx = (self._search_match_idx - 1) % len(self._search_match_lines)
+        self.scroll_to(y=self._search_match_lines[self._search_match_idx], animate=False)
+        self.refresh()
+
+    def _exit_search(self) -> None:
+        """Exit search mode and clear highlights."""
+        self._search_mode = False
+        self._search_pattern = None
+        self._search_query = ""
+        self._search_match_lines = []
+        self._search_match_idx = -1
+        self._search_highlight_lines = set()
+        self.refresh()
+
+    def on_key(self, event) -> None:
+        """Handle search mode key events."""
+        if not self._search_mode:
+            if event.key == "slash":
+                self.action_start_search()
+                event.prevent_default()
+                event.stop()
+            elif event.key == "escape" and self._search_highlight_lines:
+                self._exit_search()
+                event.prevent_default()
+                event.stop()
+            return
+
+        # In search mode, capture all keys
+        event.prevent_default()
+        event.stop()
+
+        if event.key == "escape":
+            self._exit_search()
+        elif event.key == "enter":
+            # Confirm search, stay in highlight mode for n/N navigation
+            self._search_mode = False
+            self.refresh()
+        elif event.key == "backspace":
+            self._apply_search(self._search_query[:-1])
+        elif event.character and len(event.character) == 1 and event.character.isprintable():
+            self._apply_search(self._search_query + event.character)
+
+    def _handle_search_navigation(self, event) -> bool:
+        """Handle n/N for search navigation when not in search input mode. Returns True if handled."""
+        if not self._search_match_lines or self._search_mode:
+            return False
+        if event.key == "n":
+            self._search_next()
+            return True
+        elif event.key == "N":
+            self._search_prev()
+            return True
+        elif event.key == "escape":
+            self._exit_search()
+            return True
+        return False
 
     def set_message(self, msg: str) -> None:
         """Display a simple message instead of a diff."""
