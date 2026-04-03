@@ -10,3 +10,4 @@ dist/
 .DS_Store
 TODO.md
 set_creds.sh
+docs/
