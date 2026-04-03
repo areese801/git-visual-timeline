@@ -60,6 +60,7 @@ class GVTApp(App):
         Binding("p", "global_prev_hunk", "Prev hunk", show=False),
         Binding("N", "global_prev_hunk", "Prev hunk", show=False),
         Binding("P", "global_next_hunk", "Next hunk", show=False),
+        Binding("slash", "global_search_diff", "Search diff", show=False),
         Binding("y", "copy_short_hash", "Copy hash", show=False),
         Binding("Y", "copy_full_hash", "Copy full hash", show=False),
         Binding("e", "open_in_editor", "Open in editor", show=False),
@@ -642,6 +643,12 @@ class GVTApp(App):
                 self._load_file(result)
 
         self.push_screen(FileSearchModal(tracked_files), callback=on_result)
+
+    def action_global_search_diff(self) -> None:
+        diff_view = self.query_one("#diff-view", DiffViewWidget)
+        diff_view.focus()
+        self._current_pane_idx = 3
+        diff_view.action_start_search()
 
     def action_global_next_hunk(self) -> None:
         diff_view = self.query_one("#diff-view", DiffViewWidget)

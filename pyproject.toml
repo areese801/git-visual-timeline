@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-visual-timeline"
-version = "0.1.0"
+version = "0.2.0"
 description = "Git Visual Timeline — a keyboard-driven TUI for exploring file commit history"
 readme = "README.md"
 license = {text = "MIT"}
