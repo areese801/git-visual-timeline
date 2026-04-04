@@ -1,4 +1,5 @@
 venv/
+venv-e2e/
 .superpowers/
 __pycache__/
 *.py[cod]

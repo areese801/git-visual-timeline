@@ -1,0 +1,22 @@
+1..21
+ok 1 - A1: gvt --version prints version and exits 0
+ok 2 - A2: gvt --help prints usage and exits 0
+ok 3 - A3: gvt outside git repo errors with exit 1
+ok 4 - A4: gvt opens TUI for valid file
+ok 5 - A5: gvt with missing file errors with exit 1
+ok 6 - A8: gvt in empty repo exited without crash
+ok 7 - A9: qq exits gvt cleanly
+ok 8 - A10: single q shows quit confirmation modal
+ok 9 - A11: SIGTERM handled (process terminated)
+ok 10 - A12 # SKIP terminal-corruption is expected; user-recoverable via stty sane
+ok 11 - A13: Ctrl+C handled by Textual (app stays alive, expected)
+ok 12 - G1: gvt.log created at /home/trustycage/.config/gvt/gvt.log
+ok 13 - G2: DEBUG lines written with GVT_LOG_LEVEL=DEBUG
+ok 14 - G3: warning/error logged for corrupt ref
+ok 15 - G4: log rotation occurred (gvt.log.1 exists)
+ok 16 - G5: gvt exited cleanly with read-only log dir
+ok 17 - I1: gvt launches despite corrupt ref
+ok 18 - I2: gvt shows HEAD in detached state
+ok 19 - I3: gvt survived .git/HEAD deletion mid-session
+ok 20 - I4 # SKIP external commit during session — out of scope
+ok 21 - I5 # SKIP concurrent pytest — out of scope

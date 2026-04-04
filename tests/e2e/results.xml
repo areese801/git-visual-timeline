@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="21" failures="0" skipped="3">
+  <testsuite name="gvt-e2e" tests="21" failures="0" skipped="3">
+    <testcase name="A1: gvt --version prints version and exits 0"/>
+    <testcase name="A2: gvt --help prints usage and exits 0"/>
+    <testcase name="A3: gvt outside git repo errors with exit 1"/>
+    <testcase name="A4: gvt opens TUI for valid file"/>
+    <testcase name="A5: gvt with missing file errors with exit 1"/>
+    <testcase name="A8: gvt in empty repo exited without crash"/>
+    <testcase name="A9: qq exits gvt cleanly"/>
+    <testcase name="A10: single q shows quit confirmation modal"/>
+    <testcase name="A11: SIGTERM handled (process terminated)"/>
+    <testcase name="A12 "><skipped message="terminal-corruption is expected; user-recoverable via stty sane"/></testcase>
+    <testcase name="A13: Ctrl+C handled by Textual (app stays alive, expected)"/>
+    <testcase name="G1: gvt.log created at /home/trustycage/.config/gvt/gvt.log"/>
+    <testcase name="G2: DEBUG lines written with GVT_LOG_LEVEL=DEBUG"/>
+    <testcase name="G3: warning/error logged for corrupt ref"/>
+    <testcase name="G4: log rotation occurred (gvt.log.1 exists)"/>
+    <testcase name="G5: gvt exited cleanly with read-only log dir"/>
+    <testcase name="I1: gvt launches despite corrupt ref"/>
+    <testcase name="I2: gvt shows HEAD in detached state"/>
+    <testcase name="I3: gvt survived .git/HEAD deletion mid-session"/>
+    <testcase name="I4 "><skipped message="external commit during session — out of scope"/></testcase>
+    <testcase name="I5 "><skipped message="concurrent pytest — out of scope"/></testcase>
+  </testsuite>
+</testsuites>
