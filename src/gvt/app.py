@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -23,7 +27,6 @@ from gvt.widgets.modals import (
     CommitFilesModal,
     CommitSearchModal,
     FileSearchModal,
-    FlashAuthorModal,
     HelpModal,
     QuitConfirmModal,
     TimeFilterModal,
@@ -206,7 +209,6 @@ class GVTApp(App):
             diff_view.set_diff("")
             diff_view.set_message("")
             # Build a simple preview with line numbers
-            from rich.text import Text
             lines = []
             for i, line_text in enumerate(content.split("\n"), 1):
                 t = Text()
@@ -240,8 +242,6 @@ class GVTApp(App):
     @work(thread=True)
     def _do_load_file(self, file_path: str) -> None:
         """Load file commits in background thread."""
-        from datetime import datetime, timezone
-
         commits = self.git_repo.get_file_commits(file_path)
 
         # Append WIP tick if file has uncommitted changes
@@ -373,11 +373,18 @@ class GVTApp(App):
     @work(thread=True)
     def _load_diff(self, file_path: str, left_idx: int, right_idx: int) -> None:
         """Load diff between two commits, using cache."""
-        if not self.current_commits:
+        commits = list(self.current_commits)
+        if not commits:
             return
 
-        left = self.current_commits[left_idx]
-        right = self.current_commits[right_idx]
+        if left_idx >= len(commits) or right_idx >= len(commits):
+            return
+
+        if self.current_file != file_path:
+            return
+
+        left = commits[left_idx]
+        right = commits[right_idx]
         diff_view = self.query_one("#diff-view", DiffViewWidget)
 
         if left.hexsha == right.hexsha:
@@ -426,11 +433,11 @@ class GVTApp(App):
     @work(thread=True, exclusive=True, group="preload")
     def _preload_adjacent_diffs(self, file_path: str, cursor_idx: int, context: int) -> None:
         """Preload diffs for adjacent timeline positions into the cache."""
-        if not self.current_commits or len(self.current_commits) < 2:
+        commits = list(self.current_commits)
+        if not commits or len(commits) < 2:
             return
 
         cache_key_suffix = f"_ctx{context}"
-        commits = self.current_commits
 
         # Adjacent pairs to preload: (N-1 → N) and (N → N+1)
         pairs = []
@@ -503,7 +510,6 @@ class GVTApp(App):
     def _tmux_select_pane(direction: str) -> None:
         """Hand off navigation to tmux if running inside tmux."""
         if os.environ.get("TMUX"):
-            import subprocess
             subprocess.run(["tmux", "select-pane", f"-{direction}"], check=False)
 
     def action_focus_left(self) -> None:
@@ -677,7 +683,8 @@ class GVTApp(App):
         if diff_view.blame_enabled and self.current_file and self.current_commits:
             timeline = self.query_one("#timeline-widget", TimelineWidget)
             right_commit = self.current_commits[timeline.right_cursor]
-            self._load_blame(self.current_file, right_commit.hexsha)
+            if not right_commit.is_wip:
+                self._load_blame(self.current_file, right_commit.hexsha)
 
     def action_flash_last_author(self) -> None:
         """Show who last modified the file and contributor breakdown."""
@@ -686,10 +693,18 @@ class GVTApp(App):
         timeline = self.query_one("#timeline-widget", TimelineWidget)
         commit = self.current_commits[timeline.cursor]
         contributors = self.git_repo.get_file_contributors(self.current_file)
-        self.push_screen(FlashAuthorModal(
-            commit.author, commit.short_hash, commit.date,
-            contributors, self.current_file,
-        ))
+
+        # Build contributor text for notification (no modal — avoids ghosting)
+        total = sum(count for _, count in contributors)
+        lines = [f"Last modified by {commit.author}  ({commit.short_hash})"]
+        if total:
+            lines.append("")
+            for name, count in contributors[:8]:
+                pct = count / total * 100
+                bar = "█" * max(1, round(count / total * 20))
+                lines.append(f"  {bar} {name}  {count} commits ({pct:.0f}%)")
+        self.clear_notifications()
+        self.notify("\n".join(lines), title="Contributors", timeout=5)
 
     def action_copy_short_hash(self) -> None:
         if not self.current_commits:
@@ -706,8 +721,6 @@ class GVTApp(App):
         self._copy_to_clipboard(commit.hexsha)
 
     def _copy_to_clipboard(self, text: str) -> None:
-        import subprocess
-        import shutil
         try:
             if shutil.which("pbcopy"):
                 subprocess.run(["pbcopy"], input=text.encode(), check=True)
@@ -725,12 +738,10 @@ class GVTApp(App):
     def action_open_in_editor(self) -> None:
         if not self.current_file:
             return
-        import shutil
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vim"
         file_path = os.path.join(self.repo_path, self.current_file)
         self.suspend()
         try:
-            import subprocess
             subprocess.run([editor, file_path])
         finally:
             self.resume()
