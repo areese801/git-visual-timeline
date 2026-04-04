@@ -13,3 +13,7 @@ TODO.md
 set_creds.sh
 .agent/
 docs/superpowers/
+docs/external_test_plan.md
+tests/e2e/results.tap
+tests/e2e/results.xml
+docs/external_test_plan.md
