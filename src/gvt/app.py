@@ -9,15 +9,20 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from git.exc import GitCommandError
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widget import Widget
 
 from gvt.git.cache import DiffCache
 from gvt.git.repo import CommitInfo, GitRepo
+from gvt.logging_setup import get_logger
+
+log = get_logger(__name__)
 from gvt.widgets.changed_files import ChangedFilesWidget, ChangedFileSelected, ChangedFileHighlighted
 from gvt.widgets.commit_bar import CommitMessageBar, ShowCommitDetail
 from gvt.widgets.diff_view import DiffContextChanged, DiffViewWidget
@@ -259,8 +264,8 @@ class GVTApp(App):
                         is_wip=True,
                     )
                     commits.append(wip_commit)
-            except Exception:
-                pass
+            except GitCommandError as e:
+                log.warning("WIP probe for %s failed: %s", file_path, e)
 
         self.call_from_thread(self._apply_loaded_file, file_path, commits)
 
@@ -489,8 +494,8 @@ class GVTApp(App):
             try:
                 widget = self.query_one(f"#{widget_id}")
                 widget.focus()
-            except Exception:
-                pass
+            except NoMatches:
+                log.debug("focus_pane: widget #%s not present", widget_id)
 
     def action_focus_next_pane(self) -> None:
         self._current_pane_idx = (self._current_pane_idx + 1) % len(self._pane_order)
@@ -732,7 +737,8 @@ class GVTApp(App):
                 self.notify("No clipboard tool found", timeout=2)
                 return
             self.notify(f"Copied {text}", timeout=2)
-        except Exception:
+        except (subprocess.CalledProcessError, OSError) as e:
+            log.warning("clipboard copy failed: %s", e)
             self.notify("Failed to copy to clipboard", timeout=2)
 
     def action_open_in_editor(self) -> None:
@@ -740,11 +746,17 @@ class GVTApp(App):
             return
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vim"
         file_path = os.path.join(self.repo_path, self.current_file)
-        self.suspend()
-        try:
-            subprocess.run([editor, file_path])
-        finally:
-            self.resume()
+        result = None
+        with self.suspend():
+            try:
+                result = subprocess.run([editor, file_path])
+            except (OSError, FileNotFoundError) as e:
+                log.warning("editor %s failed to launch: %s", editor, e)
+        if result is None:
+            self.notify(f"Could not launch editor: {editor}", timeout=3)
+        elif result.returncode != 0:
+            log.warning("editor %s exited with code %d", editor, result.returncode)
+            self.notify(f"Editor exited with code {result.returncode}", timeout=2)
 
     @work(thread=True)
     def _load_blame(self, file_path: str, commit_sha: str) -> None:

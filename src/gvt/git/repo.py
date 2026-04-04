@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from git import Repo
+from git.exc import GitCommandError
+
+from gvt.logging_setup import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -54,6 +59,22 @@ class GitRepo:
         self.repo = Repo(path, search_parent_directories=True)
         self.root = self.repo.working_tree_dir
 
+    def _build_ref_map(self) -> dict[str, list[str]]:
+        """Build a sha -> [ref names] map, tolerating individual bad refs."""
+        ref_map: dict[str, list[str]] = {}
+        try:
+            refs = list(self.repo.refs)
+        except (GitCommandError, AttributeError, ValueError) as e:
+            log.warning("failed to list refs: %s", e)
+            return ref_map
+        for ref in refs:
+            try:
+                sha = ref.commit.hexsha
+                ref_map.setdefault(sha, []).append(ref.name)
+            except (GitCommandError, AttributeError, ValueError) as e:
+                log.debug("skipping ref %s: %s", getattr(ref, "name", "?"), e)
+        return ref_map
+
     def get_file_commits(self, path: str) -> list[CommitInfo]:
         """
         Get all commits that touched a file, ordered oldest-first.
@@ -62,16 +83,7 @@ class GitRepo:
         rel_path = self._to_relative(path)
 
         # Build ref map
-        ref_map: dict[str, list[str]] = {}
-        try:
-            for ref in self.repo.refs:
-                try:
-                    sha = ref.commit.hexsha
-                    ref_map.setdefault(sha, []).append(ref.name)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        ref_map = self._build_ref_map()
 
         # Use git log with --numstat for stats, avoiding gitpython's object parser
         output = self.repo.git.log(
@@ -145,16 +157,7 @@ class GitRepo:
         Get recent commits across the entire repo (not file-specific).
         Uses git log directly. Returns newest-first for search display.
         """
-        ref_map: dict[str, list[str]] = {}
-        try:
-            for ref in self.repo.refs:
-                try:
-                    sha = ref.commit.hexsha
-                    ref_map.setdefault(sha, []).append(ref.name)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        ref_map = self._build_ref_map()
 
         output = self.repo.git.log(
             f"--max-count={max_count}",
@@ -259,7 +262,8 @@ class GitRepo:
         rel_path = self._to_relative(path)
         try:
             return self.repo.git.show(f"{commit_sha}:{rel_path}")
-        except Exception:
+        except GitCommandError as e:
+            log.warning("git show %s:%s failed: %s", commit_sha, rel_path, e)
             return ""
 
     def get_blame(self, path: str, commit_sha: str) -> list[tuple[str, str, str]]:
@@ -273,7 +277,8 @@ class GitRepo:
                 commit_sha, "--", rel_path,
                 porcelain=True,
             )
-        except Exception:
+        except GitCommandError as e:
+            log.warning("git blame %s -- %s failed: %s", commit_sha, rel_path, e)
             return []
 
         lines: list[tuple[str, str, str]] = []
@@ -341,7 +346,11 @@ class GitRepo:
         Get all files changed in a commit with their stats.
         Returns list of (file_path, additions, deletions).
         """
-        commit = self.repo.commit(commit_sha)
+        try:
+            commit = self.repo.commit(commit_sha)
+        except (GitCommandError, ValueError) as e:
+            log.warning("lookup of commit %s failed: %s", commit_sha, e)
+            return []
         files = []
         try:
             for file_path, stats in commit.stats.files.items():
@@ -350,8 +359,8 @@ class GitRepo:
                     stats.get("insertions", 0),
                     stats.get("deletions", 0),
                 ))
-        except Exception:
-            pass
+        except (AttributeError, GitCommandError, ValueError) as e:
+            log.warning("commit.stats for %s failed: %s", commit_sha, e)
         return sorted(files, key=lambda x: x[0])
 
     def get_tracked_files(self) -> list[str]:
@@ -393,6 +402,8 @@ class GitRepo:
         try:
             current = self.repo.active_branch.name
         except TypeError:
+            # Detached HEAD — expected when viewing a specific commit.
+            log.debug("detached HEAD; active_branch unavailable")
             current = "HEAD"
         return branches, current
 
