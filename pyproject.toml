@@ -54,6 +54,9 @@ gvt = "gvt.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+gvt = ["styles/*.tcss"]
+
 [tool.ruff]
 line-length = 88
 
