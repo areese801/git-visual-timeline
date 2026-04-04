@@ -4,6 +4,8 @@ A keyboard-driven TUI for exploring the commit history of any file in a git repo
 
 ![gvt full layout](docs/images/gvt-full-layout.png)
 
+**gvt is a read-only history explorer, not a git UI.** It doesn't stage, commit, push, or manage branches — lazygit is great for that. gvt does one thing: lets you scrub through a file's commit timeline, see what changed and when, and understand how code evolved over time. It's the tool you reach for when you're staring at a file and asking "how did this get here?"
+
 ## Install
 
 ```bash
