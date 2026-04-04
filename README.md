@@ -2,6 +2,8 @@
 
 A keyboard-driven TUI for exploring the commit history of any file in a git repo. Think lazygit meets a video timeline scrubber, focused on per-file history.
 
+![gvt full layout](docs/images/gvt-full-layout.png)
+
 ## Install
 
 ```bash
@@ -18,30 +20,58 @@ gvt
 gvt path/to/file.py
 ```
 
+## Layout
+
+gvt uses a 5-pane layout, each accessible by number key:
+
+| Pane | Name | What it shows |
+|------|------|---------------|
+| 1 | Files | File tree with lazy-loading directories |
+| 2 | Timeline | Heatmap of commits (green=adds, red=deletes, amber=mixed) |
+| 3 | Commits | Message, hash, date, and stats for visible commits |
+| 4 | Diff | Syntax-highlighted diff with blame, search, and context controls |
+| 5 | Changed Files | All files touched by the current commit |
+
 ## Features
 
-- **Visual timeline** with heatmap-colored ticks (green=adds, red=deletes, amber=mixed)
-- **Step-through mode** — scrub one commit at a time to see what changed
-- **Pin mode** — press `x` to mark start/end and diff any two commits, `X` to snap nearest pin
-- **Syntax-highlighted diffs** with inline, whole-file, and side-by-side views
+### Timeline Navigation
+
+Scrub through a file's commit history one tick at a time. Each tick is colored by change type — green for additions, red for deletions, amber for mixed.
+
+![Timeline navigation](docs/images/gvt-timeline-navigation.gif)
+
+### Pin Mode
+
+Press `x` to pin a commit, then move to another and press `x` again to diff any two commits. Press `x` a third time to clear. Use `X` to snap the nearest pin to your cursor.
+
+![Pin mode](docs/images/gvt-pin-mode.gif)
+
+### Inline Blame
+
+Toggle blame annotations with `b` to see who last modified each line, right-aligned alongside the diff.
+
+![Blame mode](docs/images/gvt-blame-mode.gif)
+
+### File Search
+
+Press `f` for an fzf-style fuzzy file picker that filters as you type.
+
+![File search](docs/images/gvt-file-search.gif)
+
+### All Features
+
+- **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
 - **Diff search** (`/`) — regex search within the diff with `n`/`p` to navigate matches
-- **Commit search** (`c`) — fuzzy search all repo commits by message, branch name, or author, then drill into changed files
-- **File search** (`f`) — fzf-style file picker
+- **Commit search** (`c`) — fuzzy search all repo commits by message, branch, or author
 - **Time filter** (`t`) — filter timeline by date range (1w, 1m, 3m, 6m, 1y, custom date)
-- **Inline blame** (`b`) — right-aligned blame annotations
-- **Contributor breakdown** (`B`) — visual bar chart of who changed the file
-- **WIP indicator** — hollow tick showing uncommitted changes on the timeline
-- **Changed files pane** — see all files touched by the current commit, select to navigate
-- **Side-by-side diff** (`d`) — toggle between inline and side-by-side diff views
-- **Copy to clipboard** (`y`/`Y`) — copy short or full commit hash
+- **Contributor breakdown** (`B`) — who changed the file and how much
+- **WIP indicator** — hollow tick showing uncommitted changes
+- **Copy to clipboard** (`y`/`Y`) — short or full commit hash
 - **Open in editor** (`e`) — open current file in `$VISUAL`/`$EDITOR`/vim
 - **Remember last file** — reopens to the last file you were viewing per repo
-- **5-pane layout** with numbered switching (1-5) and Ctrl+hjkl navigation
-- **tmux integration** — seamless pane switching at edges (add `gvt` to your `is_vim` regex)
-- **Lazy file tree** — loads directories on demand for large repos
+- **tmux integration** — seamless pane switching at edges
 - **Preloaded diffs** — adjacent commits pre-cached for instant navigation
 - **Context-sensitive status bar** showing relevant shortcuts per pane
-- **Untracked files** — shown in a separate section, viewable as read-only preview
 
 ## Keybindings
 
