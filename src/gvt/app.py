@@ -27,7 +27,6 @@ from gvt.widgets.modals import (
     CommitFilesModal,
     CommitSearchModal,
     FileSearchModal,
-    FlashAuthorModal,
     HelpModal,
     QuitConfirmModal,
     TimeFilterModal,
@@ -694,10 +693,18 @@ class GVTApp(App):
         timeline = self.query_one("#timeline-widget", TimelineWidget)
         commit = self.current_commits[timeline.cursor]
         contributors = self.git_repo.get_file_contributors(self.current_file)
-        self.push_screen(FlashAuthorModal(
-            commit.author, commit.short_hash, commit.date,
-            contributors, self.current_file,
-        ))
+
+        # Build contributor text for notification (no modal — avoids ghosting)
+        total = sum(count for _, count in contributors)
+        lines = [f"Last modified by {commit.author}  ({commit.short_hash})"]
+        if total:
+            lines.append("")
+            for name, count in contributors[:8]:
+                pct = count / total * 100
+                bar = "█" * max(1, round(count / total * 20))
+                lines.append(f"  {bar} {name}  {count} commits ({pct:.0f}%)")
+        self.clear_notifications()
+        self.notify("\n".join(lines), title="Contributors", timeout=5)
 
     def action_copy_short_hash(self) -> None:
         if not self.current_commits:
