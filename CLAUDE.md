@@ -90,14 +90,29 @@ make help           # Show all targets
 
 ## Testing Workflow
 
-Before committing:
+Two layers of tests live in this repo:
 
-1. **Run pytest** — `pytest -q` (27 tests currently)
-2. **Manual testing** — run `gvt` in a real repo with history and verify:
-   - Timeline renders, cursor moves with h/l
-   - File search (f) and commit search (c) work
-   - Pin mode (x) and time filter (t) work
-   - Diff loads, context +/- works, whole file (w) works
+1. **Unit / integration tests** — `tests/test_*.py`, run with `pytest -q` (~170 tests)
+2. **End-to-end tests** — `tests/e2e/*.sh`, a bash+tmux harness that exercises
+   the installed `gvt` binary against real temp git repos. Sections:
+   - `section_A.sh` — CLI lifecycle (A1–A13)
+   - `section_G.sh` — logging file creation & rotation (G1–G5)
+   - `section_I.sh` — crash recovery & resilience (I1–I5)
+   - Runner: `bash tests/e2e/run_all.sh` (emits TAP + JUnit XML)
+   - Scenario matrix: `docs/external_test_plan.md` (gitignored)
+
+**Whenever you're asked to test, run, or verify gvt, do BOTH layers:**
+
+- Run `pytest -q` for unit/integration coverage
+- Run `bash tests/e2e/run_all.sh` for CLI behavior (requires `venv-e2e/`
+  with `gvt` installed; create once with
+  `python3 -m venv venv-e2e && venv-e2e/bin/pip install -e .`)
+
+Supplement with manual TUI testing for things e2e can't easily cover
+(timeline scrubbing feel, diff rendering, side-by-side, blame overlays).
+
+Do NOT modify `src/` to make e2e scenarios pass — if an e2e test fails,
+it has found a real bug. Triage in `tests/e2e/FAILURES.md`.
 
 ## Git Workflow
 

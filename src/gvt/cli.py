@@ -65,8 +65,10 @@ def main():
             sys.stdout.write("\033[0m")      # reset colors
             sys.stdout.write("\033c")        # full terminal reset
             sys.stdout.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            # Signal handler — must never raise. Log best-effort then exit.
+            from gvt.logging_setup import get_logger
+            get_logger(__name__).warning("terminal cleanup failed: %s", e)
         os._exit(128 + signum)
 
     signal.signal(signal.SIGTERM, _cleanup_terminal)
