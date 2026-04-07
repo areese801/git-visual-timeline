@@ -161,6 +161,7 @@ class GitRepo:
 
         output = self.repo.git.log(
             f"--max-count={max_count}",
+            "--no-merges",
             "--format=---GVT_START---%n%H%n%at%n%an%n%s",
             "--shortstat",
         )
@@ -345,22 +346,32 @@ class GitRepo:
         """
         Get all files changed in a commit with their stats.
         Returns list of (file_path, additions, deletions).
+
+        Uses git diff-tree directly to avoid gitpython's commit.stats
+        which can fail with ValueError on repos with dubious ownership
+        or other gitpython object-traversal bugs.
         """
         try:
-            commit = self.repo.commit(commit_sha)
+            output = self.repo.git.diff_tree(
+                "--numstat", "-r", "--root", "--no-commit-id", commit_sha
+            )
         except (GitCommandError, ValueError) as e:
-            log.warning("lookup of commit %s failed: %s", commit_sha, e)
+            log.warning("diff-tree for %s failed: %s", commit_sha, e)
             return []
+
+        if not output:
+            return []
+
         files = []
-        try:
-            for file_path, stats in commit.stats.files.items():
-                files.append((
-                    file_path,
-                    stats.get("insertions", 0),
-                    stats.get("deletions", 0),
-                ))
-        except (AttributeError, GitCommandError, ValueError) as e:
-            log.warning("commit.stats for %s failed: %s", commit_sha, e)
+        for line in output.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            adds_str, dels_str, file_path = parts
+            adds = int(adds_str) if adds_str != "-" else 0
+            dels = int(dels_str) if dels_str != "-" else 0
+            files.append((file_path, adds, dels))
+
         return sorted(files, key=lambda x: x[0])
 
     def get_tracked_files(self) -> list[str]:
