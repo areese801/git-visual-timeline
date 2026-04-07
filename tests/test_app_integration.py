@@ -12,6 +12,7 @@ from gvt.widgets.diff_view import DiffViewWidget
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.changed_files import ChangedFilesWidget
 from gvt.widgets.commit_bar import CommitMessageBar
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal
 
 
 @pytest.fixture
@@ -132,6 +133,35 @@ async def test_commit_search_with_cache(app_repo):
         await pilot.press("c")
         await pilot.pause()
         assert len(app.screen_stack) > 1
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_commit_search_select_shows_file_picker(app_repo):
+    """Select a commit from search → CommitFilesModal should appear."""
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        # Pre-populate cache
+        all_commits = app.git_repo.get_all_commits()
+        app._all_commits_cache = all_commits
+
+        # Open commit search
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(app.screen, CommitSearchModal), (
+            f"Expected CommitSearchModal, got {type(app.screen).__name__}"
+        )
+        # Press Enter to select the first commit
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        # CommitFilesModal should now be on the screen stack
+        assert isinstance(app.screen, CommitFilesModal), (
+            f"Expected CommitFilesModal, got {type(app.screen).__name__}"
+        )
         await pilot.press("escape")
         await pilot.pause()
 

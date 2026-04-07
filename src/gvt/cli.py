@@ -26,30 +26,40 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate we're in a git repo
     from git import InvalidGitRepositoryError, Repo
 
-    try:
-        repo = Repo(os.getcwd(), search_parent_directories=True)
-    except InvalidGitRepositoryError:
-        print("Error: not a git repository (or any parent)", file=sys.stderr)
-        sys.exit(1)
+    initial_file = None
+    abs_target = os.path.abspath(args.file) if args.file else None
 
-    # Validate file argument if provided
-    if args.file:
+    if abs_target:
+        # Determine which repo the target lives in.
+        # If the target is a directory, treat it as a repo root (or search up);
+        # if it's a file, search from its parent directory.
+        search_dir = abs_target if os.path.isdir(abs_target) else os.path.dirname(abs_target)
+        try:
+            repo = Repo(search_dir, search_parent_directories=True)
+        except InvalidGitRepositoryError:
+            print(f"Error: {args.file} is not inside a git repository", file=sys.stderr)
+            sys.exit(1)
+
         repo_root = repo.working_tree_dir
-        file_path = os.path.relpath(os.path.abspath(args.file), repo_root)
-        full_path = os.path.join(repo_root, file_path)
-        if not os.path.exists(full_path):
-            print(f"Error: file not found: {args.file}", file=sys.stderr)
+        if os.path.isdir(abs_target):
+            # Target is a directory (repo root) — open without initial file
+            initial_file = None
+        else:
+            if not os.path.exists(abs_target):
+                print(f"Error: file not found: {args.file}", file=sys.stderr)
+                sys.exit(1)
+            initial_file = os.path.relpath(abs_target, repo_root)
+    else:
+        # No argument — use cwd's repo
+        try:
+            repo = Repo(os.getcwd(), search_parent_directories=True)
+        except InvalidGitRepositoryError:
+            print("Error: not a git repository (or any parent)", file=sys.stderr)
             sys.exit(1)
 
     from gvt.app import GVTApp
-
-    initial_file = None
-    if args.file:
-        repo_root = repo.working_tree_dir
-        initial_file = os.path.relpath(os.path.abspath(args.file), repo_root)
 
     import signal
     import subprocess
