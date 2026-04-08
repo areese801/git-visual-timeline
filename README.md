@@ -9,8 +9,10 @@ A keyboard-driven TUI for exploring the commit history of any file in a git repo
 ## Install
 
 ```bash
-pip install git-visual-timeline
+pipx install git-visual-timeline
 ```
+
+[pipx](https://pipx.pypa.io/) installs `gvt` in an isolated environment and puts it on your PATH — the recommended way to install Python CLI tools. Install pipx itself with `brew install pipx` (macOS) or `apt install pipx` (Debian/Ubuntu).
 
 ## Usage
 
@@ -111,10 +113,10 @@ Press `f` for an fzf-style fuzzy file picker that filters as you type.
 
 | Key | Action |
 |-----|--------|
-| `j`/`k` | Scroll |
+| `j`/`k` | Scroll vertically |
+| `h`/`l` | Scroll horizontally |
 | `g`/`G` | Top/bottom |
-| `+`/`-` or `m`/`l` | More/less context lines |
-| `Shift+Left/Right` | Horizontal scroll |
+| `+`/`-` | More/less context lines |
 
 ### Search Modals
 
