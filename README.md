@@ -62,6 +62,12 @@ Press `f` for an fzf-style fuzzy file picker that filters as you type.
 
 ![File search](assets/gvt-file-search.gif)
 
+### Commit Search
+
+Press `c` to fuzzy search all repo commits by message, branch, or author.
+
+![Commit search](assets/gvt-commit-search.gif)
+
 ### All Features
 
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
