@@ -49,11 +49,13 @@ class DiffViewWidget(ScrollView, can_focus=True):
         ("P", "next_hunk", "Next hunk"),
         ("plus", "more_context", "+context"),
         ("minus", "less_context", "-context"),
-        ("m", "more_context", "+context"),
-        ("l", "less_context", "-context"),
-        ("M", "less_context", "-context"),
-        ("L", "more_context", "+context"),
         ("w", "toggle_full_file", "Whole file"),
+        ("h", "scroll_left_step", "Scroll left"),
+        ("l", "scroll_right_step", "Scroll right"),
+        ("left", "scroll_left_step", "Scroll left"),
+        ("right", "scroll_right_step", "Scroll right"),
+        ("shift+left", "scroll_left_step", "Scroll left"),
+        ("shift+right", "scroll_right_step", "Scroll right"),
     ]
 
     diff_text: reactive[str] = reactive("")
@@ -91,6 +93,17 @@ class DiffViewWidget(ScrollView, can_focus=True):
         if self.view_mode == MODE_FULL:
             self._render_full_file()
 
+    def _max_content_width(self) -> int:
+        """Return the width of the widest rendered line."""
+        if not self._lines:
+            return self.size.width
+        return max(self.size.width, max(len(line.plain) for line in self._lines))
+
+    def _update_virtual_size(self) -> None:
+        """Set virtual size based on line count and max content width."""
+        from textual.geometry import Size
+        self.virtual_size = Size(self._max_content_width(), max(len(self._lines), 1))
+
     def watch_diff_text(self, value: str) -> None:
         if self.side_by_side and self.view_mode == MODE_DIFF:
             self._render_side_by_side(value)
@@ -99,7 +112,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
         else:
             self._parse_diff_line_numbers(value)
             self._render_full_file()
-        self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+        self._update_virtual_size()
         self.scroll_home(animate=False)
         self.refresh()
 
@@ -211,7 +224,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
 
             self._lines.append(line)
 
-        self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+        self._update_virtual_size()
         self.refresh()
 
     def _render_side_by_side(self, diff: str) -> None:
@@ -298,7 +311,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
 
             self._lines.append(line)
 
-        self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+        self._update_virtual_size()
         self.refresh()
 
     def action_toggle_side_by_side(self) -> None:
@@ -310,7 +323,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
             self._render_side_by_side(self.diff_text)
         else:
             self._parse_diff(self.diff_text)
-            self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+            self._update_virtual_size()
         self.scroll_home(animate=False)
         self.refresh()
 
@@ -421,7 +434,11 @@ class DiffViewWidget(ScrollView, can_focus=True):
                 if content_width < self.size.width:
                     segments.append(Segment(" " * (self.size.width - content_width), flash_style))
 
-            return Strip(segments)
+            strip = Strip(segments)
+            scroll_x = int(self.scroll_offset.x)
+            if scroll_x:
+                return strip.crop(scroll_x, scroll_x + self.size.width)
+            return strip
         bg = Style(bgcolor="#1a1b26")
         return Strip([Segment(" " * self.size.width, bg)])
 
@@ -485,6 +502,17 @@ class DiffViewWidget(ScrollView, can_focus=True):
         self.context_lines = max(0, self.context_lines - 3)
         self.post_message(DiffContextChanged(self.context_lines, self.view_mode == MODE_FULL))
 
+    def action_scroll_left_step(self) -> None:
+        """Scroll diff content left (show earlier columns)."""
+        target_x = max(0, int(self.scroll_offset.x) - 8)
+        self.scroll_to(x=target_x, animate=False)
+
+    def action_scroll_right_step(self) -> None:
+        """Scroll diff content right (show later columns)."""
+        max_x = self.virtual_size.width - self.size.width
+        target_x = min(max_x, int(self.scroll_offset.x) + 8)
+        self.scroll_to(x=target_x, animate=False)
+
     def action_toggle_full_file(self) -> None:
         """Toggle between diff and full-file view."""
         if self.view_mode == MODE_DIFF:
@@ -493,7 +521,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
         else:
             self.view_mode = MODE_DIFF
             self._parse_diff(self.diff_text)
-            self.virtual_size = self.size.with_height(max(len(self._lines), 1))
+            self._update_virtual_size()
             self.refresh()
 
     # --- Diff search ---
