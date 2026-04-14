@@ -2,7 +2,7 @@
 
 A keyboard-driven TUI for exploring the commit history of any file in a git repo. Think lazygit meets a video timeline scrubber, focused on per-file history.
 
-![gvt full layout](assets/gvt-full-layout.png)
+![gvt full layout](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-full-layout.png)
 
 **gvt is a read-only history explorer, not a git UI.** It doesn't stage, commit, push, or manage branches — lazygit is great for that. gvt does one thing: lets you scrub through a file's commit timeline, see what changed and when, and understand how code evolved over time. It's the tool you reach for when you're staring at a file and asking "how did this get here?"
 
@@ -42,31 +42,31 @@ gvt uses a 5-pane layout, each accessible by number key:
 
 Scrub through a file's commit history one tick at a time. Each tick is colored by change type — green for additions, red for deletions, amber for mixed.
 
-![Timeline navigation](assets/gvt-timeline-navigation.gif)
+![Timeline navigation](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-timeline-navigation.gif)
 
 ### Pin Mode
 
 Press `x` to pin a commit, then move to another and press `x` again to diff any two commits. Press `x` a third time to clear. Use `X` to snap the nearest pin to your cursor.
 
-![Pin mode](assets/gvt-pin-mode.gif)
+![Pin mode](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-pin-mode.gif)
 
 ### Inline Blame
 
 Toggle blame annotations with `b` to see who last modified each line, right-aligned alongside the diff.
 
-![Blame mode](assets/gvt-blame-mode.gif)
+![Blame mode](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-blame-mode.gif)
 
 ### File Search
 
 Press `f` for an fzf-style fuzzy file picker that filters as you type.
 
-![File search](assets/gvt-file-search.gif)
+![File search](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-file-search.gif)
 
 ### Commit Search
 
 Press `c` to fuzzy search all repo commits by message, branch, or author.
 
-![Commit search](assets/gvt-commit-search.gif)
+![Commit search](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-commit-search.gif)
 
 ### All Features
 
