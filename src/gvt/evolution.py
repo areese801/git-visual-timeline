@@ -201,9 +201,10 @@ def place_labels(positions: Iterable[tuple[int, str]], width: int, marker: str =
     """
     Lay out labels on a single row.
 
-    Each marker (if any) is always drawn at its column; its name follows and is
-    dropped when it would overlap another marker or name, run past the edge, or
-    touch the next item without a one-cell gap.
+    Each marker (if any) is always drawn at its column; its name follows it. When
+    the name would run past the right edge it goes before the marker instead.
+    A name is dropped when it would overlap another marker or name, or touch the
+    next item without a one-cell gap.
     """
     row = [" "] * width
     items = sorted((col, name) for col, name in positions if 0 <= col < width)
@@ -212,17 +213,25 @@ def place_labels(positions: Iterable[tuple[int, str]], width: int, marker: str =
         for col, _ in items:
             row[col] = marker
 
+    def fits(start: int, end: int, gap_before: bool, gap_after: bool) -> bool:
+        """Cells [start, end) are free, with blank neighbors where required."""
+        if start < 0 or end > width or any(c != " " for c in row[start:end]):
+            return False
+        if gap_before and start > 0 and row[start - 1] != " ":
+            return False
+        if gap_after and end < width and row[end] != " ":
+            return False
+        return True
+
     offset = len(marker)
     for col, name in items:
-        start = col + offset
-        end = start + len(name)
-        if end > width:
-            continue
-        span = row[start:end]
-        gap_ok = end == width or row[end] == " "
-        before_ok = marker or start == 0 or row[start - 1] == " "
-        if all(c == " " for c in span) and gap_ok and before_ok:
+        # After the marker (the marker itself separates it from the left)
+        start, end = col + offset, col + offset + len(name)
+        if fits(start, end, gap_before=not marker, gap_after=True):
             row[start:end] = list(name)
+        # Otherwise before the marker, when running off the right edge
+        elif marker and end > width and fits(col - len(name), col, gap_before=True, gap_after=False):
+            row[col - len(name):col] = list(name)
     return "".join(row)
 
 

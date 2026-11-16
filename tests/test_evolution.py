@@ -179,6 +179,10 @@ class TestLabels:
         row = place_labels([(0, "abc"), (4, "x")], 8, marker="▲")
         assert row == "▲   ▲x  "
 
+    def test_place_labels_flips_left_at_right_edge(self):
+        row = place_labels([(9, "v2")], 10, marker="▲")
+        assert row == "       v2▲"
+
     def test_place_labels_ignores_out_of_range(self):
         row = place_labels([(-1, "a"), (20, "b")], 10, marker="▲")
         assert row == " " * 10
