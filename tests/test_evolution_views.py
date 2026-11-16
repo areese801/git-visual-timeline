@@ -7,6 +7,7 @@ from textual.app import App, ComposeResult
 from gvt.git.repo import CommitInfo, TagInfo
 from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.evolution_common import PeriodChosen
+from gvt.widgets.frequency_view import FrequencyView, compact
 
 UTC = timezone.utc
 
@@ -154,3 +155,99 @@ class TestCalendarView:
             assert "Loading" in view.render().plain
             view.set_data([], [])
             assert "No commits" in view.render().plain
+
+
+def test_compact_numbers():
+    assert compact(950) == "950"
+    assert compact(1000) == "1k"
+    assert compact(1234) == "1.2k"
+    assert compact(3_400_000) == "3.4M"
+
+
+RECENT = [
+    _commit(date(2026, 9, 7), 40, 10),
+    _commit(date(2026, 10, 14), 8, 30),
+    _commit(date(2026, 11, 18), 10, 2, n=1),
+    _commit(date(2026, 11, 18), 4, 4, n=2),
+]
+
+
+class TestFrequencyView:
+    async def test_weekly_when_history_fits(self):
+        view = FrequencyView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.pause()
+            assert view.granularity == "week"
+            assert view.periods[0].start == date(2026, 9, 7)
+            assert view.periods[-1].start == date(2026, 11, 16)
+            assert view.cursor == len(view.periods) - 1
+            status = view.status_text().plain
+            assert "Week of 2026-11-16" in status
+            assert "2 commits" in status
+            assert "▲ v1.0" in status
+
+    async def test_monthly_when_weekly_does_not_fit(self):
+        view = FrequencyView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(80, 16)) as pilot:
+            view.set_data(COMMITS, TAGS)
+            await pilot.pause()
+            assert view.granularity == "month"
+            assert view.periods[0].start == date(2024, 1, 1)
+            assert "Nov 2026" in view.status_text().plain
+
+    async def test_cursor_moves_and_jumps(self):
+        view = FrequencyView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.press("h")
+            assert view.cursor == len(view.periods) - 2
+            await pilot.press("0")
+            assert view.cursor == 0
+            assert "+40" in view.status_text().plain
+            await pilot.press("h")
+            assert view.cursor == 0
+            await pilot.press("dollar_sign")
+            assert view.cursor == len(view.periods) - 1
+
+    async def test_enter_posts_period(self):
+        view = FrequencyView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.press("enter")
+            await pilot.pause()
+            event = host.chosen[0]
+            assert (event.start, event.end) == (date(2026, 11, 16), date(2026, 11, 23))
+            assert event.label == "Week of 2026-11-16"
+
+    async def test_render_fills_height_with_bars_both_ways(self):
+        view = FrequencyView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.pause()
+            lines = view.render().plain.split("\n")
+            assert len(lines) == 16
+            assert lines[0].lstrip().startswith("+")
+            axis = [line for line in lines if "─" in line]
+            assert len(axis) == 1
+            chart = "\n".join(lines[:12])
+            assert "█" in chart
+            assert "2026" in lines[12]
+
+    async def test_cursor_survives_rebinning(self):
+        view = FrequencyView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(COMMITS, TAGS)
+            await pilot.pause()
+            assert view.granularity == "month"  # 35 months fit 113 columns
+            await pilot.resize_terminal(40, 16)
+            await pilot.pause()
+            assert view.granularity == "year"  # 35 months don't fit 33 columns
+            assert view.periods[view.cursor].start == date(2026, 1, 1)
+            assert view.status_text().plain.startswith("2026")
