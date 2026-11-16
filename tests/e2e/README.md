@@ -62,7 +62,6 @@ bash tests/e2e/section_I.sh   # Resilience
 
 Scenarios B, C, D, E, F, H are intentionally out of scope for this harness —
 they need interactive TUI validation or a large external repo (e.g. cpython).
-See `docs/external_test_plan.md` (gitignored, local-only) for the full matrix.
 
 ## Expected results
 
@@ -97,7 +96,7 @@ else
 fi
 ```
 
-Update the scenario count in `docs/external_test_plan.md` and in this README.
+Update the scenario count in this README.
 
 ## Do NOT modify `src/` to make e2e tests pass
 

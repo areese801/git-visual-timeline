@@ -6,8 +6,6 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 **gvt** (Git Visual Timeline) is a keyboard-driven Python TUI for exploring per-file git commit history. Built with Textual, it presents a 5-pane layout with a heatmap timeline, syntax-highlighted diffs, commit search, inline blame, and more. Think lazygit meets a video timeline scrubber.
 
-The design spec is at `docs/superpowers/specs/2026-04-02-gvt-design.md`.
-
 ## Build & Development
 
 ```bash
@@ -99,7 +97,6 @@ Two layers of tests live in this repo:
    - `section_G.sh` — logging file creation & rotation (G1–G5)
    - `section_I.sh` — crash recovery & resilience (I1–I5)
    - Runner: `bash tests/e2e/run_all.sh` (emits TAP + JUnit XML)
-   - Scenario matrix: `docs/external_test_plan.md` (gitignored)
 
 **Whenever you're asked to test, run, or verify gvt, do BOTH layers:**
 

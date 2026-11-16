@@ -18,5 +18,11 @@ docs/linkedin-post.md
 tests/e2e/results.tap
 tests/e2e/results.xml
 
+# Kanbaroo MCP wiring (machine-specific token path)
+.mcp.json
+
+# Private local-only Claude guidance
+CLAUDE.local.md
+
 # Local review and agent artifacts (may describe unfixed issues)
 .agent/
