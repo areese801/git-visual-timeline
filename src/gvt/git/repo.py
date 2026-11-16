@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -52,12 +54,29 @@ class CommitInfo:
         return f"{self.message} {self.refs} {self.author}"
 
 
+@dataclass
+class TagInfo:
+    """A tag name and the commit it points at."""
+
+    name: str
+    hexsha: str
+    date: datetime
+
+
+# Log format shared by the shortstat-based log readers
+LOG_FORMAT = "--format=---GVT_START---%n%H%n%at%n%an%n%s"
+
+# Max number of scoped logs kept in memory
+SCOPE_CACHE_SIZE = 8
+
+
 class GitRepo:
     """Wraps gitpython to provide gvt-specific operations."""
 
     def __init__(self, path: str):
         self.repo = Repo(path, search_parent_directories=True)
         self.root = self.repo.working_tree_dir
+        self._scope_cache: OrderedDict[tuple[str, str], list[CommitInfo]] = OrderedDict()
 
     def _build_ref_map(self) -> dict[str, list[str]]:
         """Build a sha -> [ref names] map, tolerating individual bad refs."""
@@ -162,17 +181,99 @@ class GitRepo:
         output = self.repo.git.log(
             f"--max-count={max_count}",
             "--no-merges",
-            "--format=---GVT_START---%n%H%n%at%n%an%n%s",
+            LOG_FORMAT,
             "--shortstat",
         )
+        return self._parse_log(output, ref_map)
 
-        if not output:
+    def get_scope_commits(self, path: str) -> list[CommitInfo]:
+        """
+        Get all non-merge commits touching a file or directory, newest-first.
+
+        Line counts are limited to the scope by the pathspec, so a directory's
+        additions/deletions only count its own files. Results are cached per
+        (scope, HEAD) so a new commit invalidates them.
+
+        :param path: File or directory path, relative or absolute. "" or "." means
+            the whole repo.
+        :returns: Commits newest-first; empty for an empty repo or unknown path.
+        :raises GitCommandError: If git log fails for a reason other than an
+            empty repo.
+        """
+        scope = self._normalize_scope(path)
+        head = self.get_head_sha()
+        if head is None:
             return []
 
-        commits = []
-        chunks = output.split("---GVT_START---")
+        key = (scope, head)
+        cached = self._scope_cache.get(key)
+        if cached is not None:
+            self._scope_cache.move_to_end(key)
+            return cached
 
-        for chunk in chunks:
+        output = self.repo.git.log("--no-merges", LOG_FORMAT, "--shortstat", "--", scope)
+        commits = self._parse_log(output, self._build_ref_map())
+
+        self._scope_cache[key] = commits
+        while len(self._scope_cache) > SCOPE_CACHE_SIZE:
+            self._scope_cache.popitem(last=False)
+        return commits
+
+    def get_head_sha(self) -> str | None:
+        """
+        Return the HEAD commit sha, or None when the repo has no commits.
+        """
+        try:
+            return self.repo.git.rev_parse("--verify", "--quiet", "HEAD").strip() or None
+        except GitCommandError:
+            return None
+
+    def get_tags(self) -> list[TagInfo]:
+        """
+        List tags with the date of the commit each one points at, oldest-first.
+        """
+        try:
+            output = self.repo.git.log("--no-walk", "--tags", "--format=%H%x09%at%x09%D")
+        except GitCommandError as e:
+            log.warning("failed to list tags: %s", e)
+            return []
+
+        tags = []
+        for line in output.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            hexsha, timestamp, decorations = parts
+            try:
+                date = datetime.fromtimestamp(int(timestamp), tz=timezone.utc)
+            except ValueError:
+                continue
+            for deco in decorations.split(", "):
+                if deco.startswith("tag: "):
+                    tags.append(TagInfo(name=deco[len("tag: "):], hexsha=hexsha, date=date))
+
+        tags.sort(key=lambda t: (t.date, t.name))
+        return tags
+
+    def _normalize_scope(self, path: str) -> str:
+        """Turn a scope path into a repo-relative pathspec ("." for the whole repo)."""
+        rel = self._to_relative(path).strip("/") if path else ""
+        return rel if rel and rel != "." else "."
+
+    @staticmethod
+    def _parse_log(output: str, ref_map: dict[str, list[str]]) -> list[CommitInfo]:
+        """
+        Parse `git log` output written with LOG_FORMAT and --shortstat.
+
+        :param output: Raw git log output.
+        :param ref_map: sha -> ref names, used to fill CommitInfo.refs.
+        :returns: Commits in the order git printed them.
+        """
+        commits: list[CommitInfo] = []
+        if not output:
+            return commits
+
+        for chunk in output.split("---GVT_START---"):
             chunk = chunk.strip()
             if not chunk:
                 continue
@@ -198,7 +299,6 @@ class GitRepo:
             total_dels = 0
             for line in lines[4:]:
                 if "insertion" in line or "deletion" in line:
-                    import re
                     add_match = re.search(r"(\d+) insertion", line)
                     del_match = re.search(r"(\d+) deletion", line)
                     if add_match:
@@ -206,7 +306,6 @@ class GitRepo:
                     if del_match:
                         total_dels = int(del_match.group(1))
 
-            refs_list = ref_map.get(hexsha, [])
             commits.append(
                 CommitInfo(
                     hexsha=hexsha,
@@ -215,7 +314,7 @@ class GitRepo:
                     message=subject,
                     additions=total_adds,
                     deletions=total_dels,
-                    refs=" ".join(refs_list),
+                    refs=" ".join(ref_map.get(hexsha, [])),
                 )
             )
         return commits
