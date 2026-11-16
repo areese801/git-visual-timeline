@@ -48,6 +48,7 @@ GLOBAL_SHORTCUTS = [
     ("1-5", "panes"),
     ("c", "commits"),
     ("f", "files"),
+    ("v", "evolution"),
     ("y", "copy hash"),
     ("e", "editor"),
     ("?", "help"),

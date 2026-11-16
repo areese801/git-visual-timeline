@@ -34,7 +34,6 @@ LEGEND = [
     ("Tab", "views"),
     ("h/j/k/l", "move"),
     ("[ ]", "year"),
-    ("0/$", "ends"),
     ("Enter", "commits"),
     ("?", "help"),
     ("Esc", "back"),
@@ -43,7 +42,7 @@ LEGEND = [
 
 def summarize(commits: list[CommitInfo], tz: tzinfo | None = None) -> Text:
     """
-    One-line overview of a scope: commits, active days, authors, span, +/−.
+    One-line overview of a scope: commits, +/−, active days, authors, span.
     """
     text = Text()
     if not commits:
@@ -51,19 +50,17 @@ def summarize(commits: list[CommitInfo], tz: tzinfo | None = None) -> Text:
     dim = "#565f89"
     days = bucket_by_day(commits, tz)
     authors = {c.author for c in commits}
-    parts = [
-        plural(len(commits), "commit"),
-        plural(len(days), "active day"),
-        plural(len(authors), "author"),
-        f"{min(days).isoformat()} → {max(days).isoformat()}",
-    ]
-    for i, part in enumerate(parts):
-        if i:
-            text.append("  ·  ", style=dim)
-        text.append(part, style="#c0caf5")
+    text.append(plural(len(commits), "commit"), style="#c0caf5")
     text.append("  ·  ", style=dim)
     text.append(f"+{sum(c.additions for c in commits):,}", style="#9ece6a")
     text.append(f" −{sum(c.deletions for c in commits):,}", style="#f7768e")
+    for part in (
+        plural(len(days), "active day"),
+        plural(len(authors), "author"),
+        f"{min(days).isoformat()} → {max(days).isoformat()}",
+    ):
+        text.append("  ·  ", style=dim)
+        text.append(part, style="#c0caf5")
     return text
 
 

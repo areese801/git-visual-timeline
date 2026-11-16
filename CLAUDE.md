@@ -60,7 +60,9 @@ make help           # Show all targets
 | `src/gvt/cli.py` | CLI entry point (argparse), SIGTERM handler |
 | `src/gvt/git/repo.py` | GitRepo wrapper — commits, diffs, blame, file listing |
 | `src/gvt/git/cache.py` | LRU diff cache (~100 entries) |
-| `src/gvt/widgets/` | All TUI widgets (timeline, diff_view, file_tree, modals, etc.) |
+| `src/gvt/evolution.py` | Pure binning/layout math for the Evolution views (no git, no Textual) |
+| `src/gvt/widgets/evolution_screen.py` | Evolution screen (`v`): tabs, data loading, jump into history |
+| `src/gvt/widgets/` | All TUI widgets (timeline, diff_view, file_tree, modals, calendar_view, frequency_view, etc.) |
 | `src/gvt/styles/app.tcss` | Textual CSS — Tokyo Night color scheme |
 
 ### Design Patterns
@@ -90,10 +92,10 @@ make help           # Show all targets
 
 Two layers of tests live in this repo:
 
-1. **Unit / integration tests** — `tests/test_*.py`, run with `pytest -q` (~170 tests)
+1. **Unit / integration tests** — `tests/test_*.py`, run with `pytest -q` (~260 tests)
 2. **End-to-end tests** — `tests/e2e/*.sh`, a bash+tmux harness that exercises
    the installed `gvt` binary against real temp git repos. Sections:
-   - `section_A.sh` — CLI lifecycle (A1–A13)
+   - `section_A.sh` — CLI lifecycle (A1–A14)
    - `section_G.sh` — logging file creation & rotation (G1–G5)
    - `section_I.sh` — crash recovery & resilience (I1–I5)
    - Runner: `bash tests/e2e/run_all.sh` (emits TAP + JUnit XML)

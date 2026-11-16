@@ -68,6 +68,17 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 
 ![Commit search](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-commit-search.gif)
 
+### Evolution
+
+Press `v` to see how code grew over time. It covers whatever is highlighted in the file tree (a file, a directory, or `.` for the whole repo), or the file open in the timeline.
+
+- **Calendar** — a year of days shaded by commit count, like a GitHub contribution graph. `[` / `]` page back and forward a year.
+- **Frequency** — lines added (up) and deleted (down) per week, switching to months or years for long histories.
+- **Release tags** marked on both time axes.
+- **Jump to history** — press `Enter` on a day or week to list its commits, then open one in the timeline.
+
+`Tab` switches views and `Esc` goes back. An active time filter (`t`) carries over.
+
 ### All Features
 
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
@@ -102,6 +113,7 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 | `n`/`p` | Next/prev diff hunk |
 | `y` / `Y` | Copy short/full commit hash |
 | `e` | Open file in editor |
+| `v` | Evolution (calendar, frequency) |
 | `?` | Help |
 | `q` | Quit (with confirmation) |
 | `qq` | Quit immediately |
@@ -123,6 +135,18 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 | `h`/`l` | Scroll horizontally |
 | `g`/`G` | Top/bottom |
 | `+`/`-` | More/less context lines |
+
+### Evolution (`v`)
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` / `1`-`2` | Switch view |
+| `h`/`l` | Move a week (calendar) or a period (frequency) |
+| `j`/`k` | Move a day (calendar) |
+| `[` / `]` | Page back/forward a year (calendar) |
+| `0`/`$` | First/last period (frequency) |
+| `Enter` | List commits, then open one in the timeline |
+| `Esc` | Back |
 
 ### Search Modals
 
