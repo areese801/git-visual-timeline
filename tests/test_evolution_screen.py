@@ -1,0 +1,229 @@
+"""Integration tests for the Evolution screen inside the full app."""
+
+from gvt.app import GVTApp
+from gvt.widgets.calendar_view import CalendarView
+from gvt.widgets.file_tree import FileTreeWidget
+from gvt.widgets.evolution_screen import EvolutionScreen, in_scope, summarize
+from gvt.widgets.frequency_view import FrequencyView
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal
+from gvt.widgets.timeline import TimelineWidget
+
+SIZE = (130, 40)
+
+
+async def _settle(app, pilot) -> None:
+    """Let workers finish and the UI catch up."""
+    await pilot.pause()
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+async def _open_evolution(app, pilot) -> EvolutionScreen:
+    await pilot.press("v")
+    await _settle(app, pilot)
+    assert isinstance(app.screen, EvolutionScreen)
+    return app.screen
+
+
+def test_in_scope():
+    assert in_scope("src/app.py", ".")
+    assert in_scope("src/app.py", "src")
+    assert in_scope("src/app.py", "src/")
+    assert in_scope("src/app.py", "src/app.py")
+    assert not in_scope("srcs/x.py", "src")
+    assert not in_scope("hello.py", "src")
+
+
+async def test_v_from_tree_root_scopes_whole_repo(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        assert (screen.scope, screen.scope_label, screen.scope_is_file) == (".", "whole repo", False)
+        assert len(screen.commits) == 6
+        calendar = screen.query_one(CalendarView)
+        assert calendar.has_focus
+        assert "6 commits" in calendar.status_text().plain
+
+
+def test_summarize(git_repo):
+    text = summarize(git_repo.get_scope_commits(".")).plain
+    assert "6 commits" in text
+    assert "2 authors" in text
+    assert "1 active day" in text
+    assert "+" in text and "−" in text
+    assert summarize([]).plain == ""
+
+
+async def test_v_from_tree_directory_scopes_directory(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("j")  # root -> src/
+        screen = await _open_evolution(app, pilot)
+        assert (screen.scope, screen.scope_label, screen.scope_is_file) == ("src", "src/", False)
+        assert len(screen.commits) == 2
+
+
+async def test_v_from_timeline_scopes_current_file(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="hello.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        assert isinstance(app.focused, TimelineWidget)
+        screen = await _open_evolution(app, pilot)
+        assert (screen.scope, screen.scope_is_file) == ("hello.py", True)
+        assert len(screen.commits) == 4
+
+
+async def test_escape_returns_and_restores_focus(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="hello.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await _open_evolution(app, pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, EvolutionScreen)
+        assert isinstance(app.focused, TimelineWidget)
+
+
+async def test_pane_actions_disabled_while_open(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="hello.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        assert app.check_action("toggle_blame", ())
+        await _open_evolution(app, pilot)
+        assert not app.check_action("toggle_blame", ())
+        assert not app.check_action("time_filter", ())
+        assert not app.check_action("evolution", ())
+        assert app.check_action("confirm_quit", ())
+        assert app.check_action("show_help", ())
+        # Keys that would touch the hidden panes do nothing
+        await pilot.press("b", "t", "w", "1")
+        await pilot.pause()
+        assert isinstance(app.screen, EvolutionScreen)
+
+
+async def test_tab_and_number_keys_switch_views(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        await pilot.press("tab")
+        await pilot.pause()
+        assert screen.query_one(FrequencyView).has_focus
+        await pilot.press("1")
+        await pilot.pause()
+        assert screen.query_one(CalendarView).has_focus
+        await pilot.press("2")
+        await pilot.pause()
+        assert screen.query_one(FrequencyView).has_focus
+        await pilot.press("shift+tab")
+        await pilot.pause()
+        assert screen.query_one(CalendarView).has_focus
+
+
+async def test_empty_scope_shows_message(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        app.push_screen(EvolutionScreen(app.git_repo, "nope", "nope/", False))
+        await _settle(app, pilot)
+        view = app.screen.query_one(CalendarView)
+        assert "No commits touch nope/" in view.render().plain
+
+
+async def test_time_filter_carried_into_title(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        app.push_screen(EvolutionScreen(app.git_repo, ".", "whole repo", False, time_filter="2000-01-01"))
+        await _settle(app, pilot)
+        assert "(since 2000-01-01)" in str(app.screen.query_one("#evolution-container").border_title)
+        assert len(app.screen.commits) == 6
+
+
+async def test_file_scope_jump_lands_on_chosen_commit(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="hello.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await _open_evolution(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, CommitSearchModal)
+        # Newest first: Update app and hello, Add exclamation, ...
+        await pilot.press("down", "enter")
+        await _settle(app, pilot)
+        assert not isinstance(app.screen, (EvolutionScreen, CommitSearchModal))
+        timeline = app.query_one("#timeline-widget", TimelineWidget)
+        assert app.current_file == "hello.py"
+        assert timeline.commits[timeline.cursor].message == "Add exclamation"
+
+
+async def test_directory_scope_jump_lists_in_scope_files_first(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await pilot.press("j")  # src/
+        await _open_evolution(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, CommitSearchModal)
+        await pilot.press("enter")  # Update app and hello
+        await pilot.pause()
+        assert isinstance(app.screen, CommitFilesModal)
+        assert [f[0] for f in app.screen.files] == ["src/app.py", "hello.py"]
+        await pilot.press("enter")
+        await _settle(app, pilot)
+        timeline = app.query_one("#timeline-widget", TimelineWidget)
+        assert app.current_file == "src/app.py"
+        assert timeline.commits[timeline.cursor].message == "Update app and hello"
+
+
+async def test_commit_search_lands_on_chosen_commit(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="README.md")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        app._all_commits_cache = app.git_repo.get_all_commits()
+        await pilot.press("c")
+        await pilot.pause()
+        # Newest first; index 4 = "Add world line" (touches hello.py only)
+        await pilot.press("down", "down", "down", "down", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, CommitFilesModal)
+        await pilot.press("enter")
+        await _settle(app, pilot)
+        timeline = app.query_one("#timeline-widget", TimelineWidget)
+        assert app.current_file == "hello.py"
+        assert timeline.commits[timeline.cursor].message == "Add world line"
+
+
+async def test_jump_from_tree_keeps_tree_expanded(fixture_repo):
+    """The Enter that closes the last modal must not also toggle the file tree."""
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        tree = app.query_one(FileTreeWidget)._tree
+        assert tree.root.is_expanded
+        await _open_evolution(app, pilot)
+        await pilot.press("enter", "enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await _settle(app, pilot)
+        assert app.current_file is not None
+        assert tree.root.is_expanded
+
+
+async def test_commit_search_from_tree_keeps_tree_expanded(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        app._all_commits_cache = app.git_repo.get_all_commits()
+        tree = app.query_one(FileTreeWidget)._tree
+        await pilot.press("c")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await _settle(app, pilot)
+        assert app.current_file is not None
+        assert tree.root.is_expanded

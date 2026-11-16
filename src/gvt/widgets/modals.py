@@ -88,15 +88,16 @@ class CommitSearchModal(ModalScreen):
         ("escape", "dismiss_modal", "Close"),
     ]
 
-    def __init__(self, commits: list[CommitInfo], **kwargs) -> None:
+    def __init__(self, commits: list[CommitInfo], title: str | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.commits = commits
+        self.title_text = title or "Search Commits (type to filter, Tab/Shift+Tab to navigate, Enter to select)"
         self.filtered: list[tuple[int, CommitInfo]] = [(i, c) for i, c in enumerate(commits)]
         self.selected_idx = 0
 
     def compose(self) -> ComposeResult:
         with Container(id="commit-search-container"):
-            yield Label("Search Commits (type to filter, Tab/Shift+Tab to navigate, Enter to select)", id="commit-search-title")
+            yield Label(self.title_text, id="commit-search-title")
             yield Input(placeholder="Search commit messages...", id="commit-search-input")
             yield Vertical(id="commit-search-results")
 
@@ -144,7 +145,7 @@ class CommitSearchModal(ModalScreen):
 
             line.append(commit.short_hash, style=f"bold {COLOR_ACCENT}")
             line.append("  ", style="")
-            line.append(commit.date.strftime("%Y-%m-%d"), style=COLOR_DIM)
+            line.append(commit.date.astimezone().strftime("%Y-%m-%d"), style=COLOR_DIM)
             line.append("  ", style="")
             line.append(commit.first_line[:60], style=COLOR_TEXT)
             line.append(f"  +{commit.additions} -{commit.deletions}", style=COLOR_DIM)
@@ -169,6 +170,7 @@ class CommitSearchModal(ModalScreen):
                 commit_idx, _ = self.filtered[self.selected_idx]
                 self.dismiss(("select", commit_idx))
             event.prevent_default()
+            event.stop()
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
@@ -436,6 +438,7 @@ class CommitFilesModal(ModalScreen):
                 file_path, _, _ = self.files[self.selected_idx]
                 self.dismiss(file_path)
             event.prevent_default()
+            event.stop()
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
@@ -632,6 +635,7 @@ class HelpModal(ModalScreen):
                 ("Tab/Shift+Tab", "Cycle panes"),
                 ("c", "Commit search"),
                 ("f / Ctrl+P", "File search"),
+                ("v", "Evolution (file tree node, or current file)"),
                 ("?", "This help"),
                 ("y/Y", "Copy short/full commit hash"),
                 ("e", "Open file in $EDITOR"),
@@ -667,6 +671,15 @@ class HelpModal(ModalScreen):
             ("Changed Files [5]", [
                 ("j/k/↑/↓", "Navigate"),
                 ("Enter", "Open file timeline"),
+            ]),
+            ("Evolution (v)", [
+                ("Tab / 1-2", "Switch view: calendar, frequency"),
+                ("h/l/←/→", "Move a week (calendar) or period"),
+                ("j/k/↑/↓", "Move a day (calendar)"),
+                ("[ / ]", "Page back/forward a year (calendar)"),
+                ("0/$", "First/last period (frequency)"),
+                ("Enter", "List commits → open in timeline"),
+                ("Esc", "Back to panes"),
             ]),
         ]
 

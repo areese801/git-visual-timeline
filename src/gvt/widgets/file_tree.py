@@ -216,6 +216,29 @@ class FileTreeWidget(Widget, can_focus=True):
             elif node.allow_expand:
                 node.toggle()
 
+    def cursor_scope(self) -> tuple[str, bool] | None:
+        """
+        Scope for the highlighted node.
+
+        :returns: (path, is_file) for a tracked file or directory, (".", False)
+            for the root, or None for untracked nodes and when nothing is
+            highlighted.
+        """
+        if not self._tree or not self._tree.cursor_node:
+            return None
+        node = self._tree.cursor_node
+        if node is self._tree.root:
+            return ".", False
+        data = node.data
+        if (
+            not data
+            or data == "__untracked_header__"
+            or data.startswith("__ut__/")
+            or data in self._untracked_set
+        ):
+            return None
+        return data, not node.allow_expand
+
     def action_toggle_node(self) -> None:
         if self._tree and self._tree.cursor_node:
             self._tree.cursor_node.toggle()
