@@ -227,3 +227,19 @@ async def test_commit_search_from_tree_keeps_tree_expanded(fixture_repo):
         await _settle(app, pilot)
         assert app.current_file is not None
         assert tree.root.is_expanded
+
+
+async def test_unexpected_load_error_shows_message_not_crash(fixture_repo, monkeypatch):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+
+        def boom(path):
+            raise OSError("disk went away")
+
+        monkeypatch.setattr(app.git_repo, "get_scope_commits", boom)
+        await pilot.press("v")
+        await _settle(app, pilot)
+        assert app.is_running
+        assert isinstance(app.screen, EvolutionScreen)
+        assert "Couldn't read history" in app.screen.query_one(CalendarView).render().plain

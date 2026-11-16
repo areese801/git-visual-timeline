@@ -1,4 +1,6 @@
-"""GitHub Insights-style code frequency chart for the Evolution screen."""
+"""
+GitHub Insights-style code frequency chart for the Evolution screen.
+"""
 
 from __future__ import annotations
 
@@ -45,7 +47,9 @@ MAX_COLUMN_WIDTH = 4
 
 
 def compact(n: int) -> str:
-    """Short number for the axis gutter: 950, 1.2k, 3.4M."""
+    """
+    Short number for the axis gutter: 950, 1.2k, 3.4M.
+    """
     if n < 1000:
         return str(n)
     if n < 1_000_000:
@@ -92,7 +96,9 @@ class FrequencyView(EvolutionView):
 
     @property
     def periods(self) -> list[PeriodStats]:
-        """Periods for the current width (re-binned when the width changes)."""
+        """
+        Periods for the current width (re-binned when the width changes).
+        """
         key = (self.chart_width, len(self.commits))
         if key != self._layout_key and self.commits:
             days = [local_day(c.date, self.tz) for c in self.commits]
@@ -111,7 +117,9 @@ class FrequencyView(EvolutionView):
 
     @property
     def cursor(self) -> int:
-        """Index of the period containing cursor_date."""
+        """
+        Index of the period containing cursor_date.
+        """
         periods = self.periods
         if not periods or self.cursor_date is None:
             return 0
@@ -167,7 +175,9 @@ class FrequencyView(EvolutionView):
         return self._status_line(text, tags_between(self.tags, p.start, end, self.tz))
 
     def _bar_cell(self, value: int, k: int, rows: int, up: bool, highlighted: bool) -> tuple[str, str]:
-        """Glyph and style for cell k (0 = next to the axis) of a bar."""
+        """
+        Glyph and style for cell k (0 = next to the axis) of a bar.
+        """
         full, rem, clipped = bar_cells(value, self._cap, rows)
         color = COLOR_GREEN if up else COLOR_RED
         bg = f" on {COLOR_CURSOR_BG}" if highlighted else ""

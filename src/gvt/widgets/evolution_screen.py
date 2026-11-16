@@ -1,4 +1,6 @@
-"""Full-screen Evolution view: how a file, directory, or repo changed over time."""
+"""
+Full-screen Evolution view: how a file, directory, or repo changed over time.
+"""
 
 from __future__ import annotations
 
@@ -65,7 +67,9 @@ def summarize(commits: list[CommitInfo], tz: tzinfo | None = None) -> Text:
 
 
 def in_scope(path: str, scope: str) -> bool:
-    """True when a repo-relative path lies inside a scope ('.' = everything)."""
+    """
+    True when a repo-relative path lies inside a scope ('.' = everything).
+    """
     return scope == "." or path == scope or path.startswith(scope.rstrip("/") + "/")
 
 
@@ -173,12 +177,12 @@ class EvolutionScreen(Screen):
 
     # Data loading
 
-    @work(thread=True, exclusive=True, group="evolution-load")
+    @work(thread=True, exclusive=True, group="evolution-load", exit_on_error=False)
     def _load_history(self) -> None:
         try:
             commits = self.git_repo.get_scope_commits(self.scope)
             tags = self.git_repo.get_tags()
-        except GitCommandError as e:
+        except (GitCommandError, OSError, ValueError) as e:
             log.warning("evolution history for %s failed: %s", self.scope, e)
             self.app.call_from_thread(self._show_message, "Couldn't read history (see log)")
             return

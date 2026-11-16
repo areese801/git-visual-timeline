@@ -1,4 +1,6 @@
-"""GitHub-style contribution calendar for the Evolution screen."""
+"""
+GitHub-style contribution calendar for the Evolution screen.
+"""
 
 from __future__ import annotations
 
@@ -63,6 +65,9 @@ class CalendarView(EvolutionView):
         ("enter", "choose", "Commits"),
     ]
 
+    # Month row, 7 day rows, tag row, blank, status
+    min_height = 11
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._days: dict[date, DayStats] = {}
@@ -93,14 +98,18 @@ class CalendarView(EvolutionView):
         return max(1, min(CALENDAR_WEEKS, fit))
 
     def window(self) -> tuple[date, date]:
-        """First Monday and last Sunday currently shown."""
+        """
+        First Monday and last Sunday currently shown.
+        """
         assert self.anchor is not None
         return calendar_window(self.anchor, self.weeks)
 
     # Navigation
 
     def _clamp_anchor(self, anchor: date) -> date:
-        """Keep the window between the oldest and newest commit weeks."""
+        """
+        Keep the window between the oldest and newest commit weeks.
+        """
         assert self.oldest is not None and self.newest is not None
         earliest = min(self.newest, week_start(self.oldest) + timedelta(weeks=self.weeks - 1))
         return max(earliest, min(self.newest, anchor))
@@ -110,12 +119,19 @@ class CalendarView(EvolutionView):
         return max(week_start(self.oldest), min(self.newest, day))
 
     def _scroll_to_cursor(self) -> None:
-        """Shift the window just enough to keep the cursor visible."""
+        """
+        Shift the window just enough to keep the cursor visible.
+        """
         first, last = self.window()
         if self.cursor_day < first:
             self.anchor = self._clamp_anchor(week_start(self.cursor_day) + timedelta(weeks=self.weeks - 1))
         elif self.cursor_day > last:
             self.anchor = self._clamp_anchor(self.cursor_day)
+
+    def on_resize(self) -> None:
+        # The window width follows the terminal; keep the cursor inside it
+        if self.cursor_day is not None:
+            self._scroll_to_cursor()
 
     def action_move(self, days: int) -> None:
         if self.cursor_day is None:

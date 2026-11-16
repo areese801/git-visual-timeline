@@ -1,4 +1,6 @@
-"""Shared pieces for the Evolution views: the period message and a base widget."""
+"""
+Shared pieces for the Evolution views: the period message and a base widget.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +25,9 @@ MIN_HEIGHT = 10
 
 
 class PeriodChosen(Message):
-    """Posted when the user presses Enter on a day or period."""
+    """
+    Posted when the user presses Enter on a day or period.
+    """
 
     def __init__(self, start: date, end: date, label: str) -> None:
         self.start = start
@@ -33,12 +37,16 @@ class PeriodChosen(Message):
 
 
 def format_count(n: int) -> str:
-    """Thousands-separated integer, e.g. 1,204."""
+    """
+    Thousands-separated integer, e.g. 1,204.
+    """
     return f"{n:,}"
 
 
 def plural(n: int, word: str) -> str:
-    """'1 commit' / '6 commits'."""
+    """
+    '1 commit' / '6 commits'.
+    """
     return f"{format_count(n)} {word}{'' if n == 1 else 's'}"
 
 
@@ -50,6 +58,9 @@ class EvolutionView(Widget, can_focus=True):
     (loading, empty, errors), and the time zone used for day bucketing
     (None = local; tests pass UTC).
     """
+
+    # Rows needed to draw the chart and its status line
+    min_height = MIN_HEIGHT
 
     def __init__(self, tz: tzinfo | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -69,15 +80,21 @@ class EvolutionView(Widget, can_focus=True):
         self.refresh()
 
     def set_message(self, message: str) -> None:
-        """Replace the chart with a centered message."""
+        """
+        Replace the chart with a centered message.
+        """
         self.message = message
         self.refresh()
 
     def on_data_changed(self) -> None:
-        """Hook for subclasses to recompute state after set_data()."""
+        """
+        Hook for subclasses to recompute state after set_data().
+        """
 
     def status_text(self) -> Text:
-        """One-line summary of the item under the cursor."""
+        """
+        One-line summary of the item under the cursor.
+        """
         return Text()
 
     def _render_message(self, message: str) -> Text:
@@ -87,10 +104,12 @@ class EvolutionView(Widget, can_focus=True):
         return text
 
     def _too_small(self) -> bool:
-        return self.size.width < MIN_WIDTH or self.size.height < MIN_HEIGHT
+        return self.size.width < MIN_WIDTH or self.size.height < self.min_height
 
     def _status_line(self, base: Text, tag_names: list[str]) -> Text:
-        """Status text plus tag names, in the shared style."""
+        """
+        Status text plus tag names, in the shared style.
+        """
         if tag_names:
             base.append("  ·  ", style=COLOR_DIM)
             base.append("▲ " + ", ".join(tag_names), style=COLOR_PURPLE)

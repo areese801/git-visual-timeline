@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,7 +57,9 @@ class CommitInfo:
 
 @dataclass
 class TagInfo:
-    """A tag name and the commit it points at."""
+    """
+    A tag name and the commit it points at.
+    """
 
     name: str
     hexsha: str
@@ -77,6 +80,8 @@ class GitRepo:
         self.repo = Repo(path, search_parent_directories=True)
         self.root = self.repo.working_tree_dir
         self._scope_cache: OrderedDict[tuple[str, str], list[CommitInfo]] = OrderedDict()
+        # Scoped logs are read from worker threads
+        self._scope_cache_lock = threading.Lock()
 
     def _build_ref_map(self) -> dict[str, list[str]]:
         """Build a sha -> [ref names] map, tolerating individual bad refs."""
@@ -206,17 +211,19 @@ class GitRepo:
             return []
 
         key = (scope, head)
-        cached = self._scope_cache.get(key)
-        if cached is not None:
-            self._scope_cache.move_to_end(key)
-            return cached
+        with self._scope_cache_lock:
+            cached = self._scope_cache.get(key)
+            if cached is not None:
+                self._scope_cache.move_to_end(key)
+                return cached
 
         output = self.repo.git.log("--no-merges", LOG_FORMAT, "--shortstat", "--", scope)
         commits = self._parse_log(output, self._build_ref_map())
 
-        self._scope_cache[key] = commits
-        while len(self._scope_cache) > SCOPE_CACHE_SIZE:
-            self._scope_cache.popitem(last=False)
+        with self._scope_cache_lock:
+            self._scope_cache[key] = commits
+            while len(self._scope_cache) > SCOPE_CACHE_SIZE:
+                self._scope_cache.popitem(last=False)
         return commits
 
     def get_head_sha(self) -> str | None:
@@ -256,7 +263,9 @@ class GitRepo:
         return tags
 
     def _normalize_scope(self, path: str) -> str:
-        """Turn a scope path into a repo-relative pathspec ("." for the whole repo)."""
+        """
+        Turn a scope path into a repo-relative pathspec ("." for the whole repo).
+        """
         rel = self._to_relative(path).strip("/") if path else ""
         return rel if rel and rel != "." else "."
 

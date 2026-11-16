@@ -251,3 +251,28 @@ class TestFrequencyView:
             assert view.granularity == "year"  # 35 months don't fit 33 columns
             assert view.periods[view.cursor].start == date(2026, 1, 1)
             assert view.status_text().plain.startswith("2026")
+
+
+class TestCalendarSizing:
+    async def test_status_line_needs_eleven_rows(self):
+        view = CalendarView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 10)) as pilot:
+            view.set_data(COMMITS, TAGS)
+            await pilot.pause()
+            assert "Terminal too small" in view.render().plain
+            await pilot.resize_terminal(120, 11)
+            await pilot.pause()
+            assert "2 commits" in view.render().plain.split("\n")[-1]
+
+    async def test_cursor_stays_visible_after_narrowing(self):
+        view = CalendarView(tz=UTC)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 14)) as pilot:
+            view.set_data(COMMITS, TAGS)
+            for _ in range(50):
+                await pilot.press("h")
+            await pilot.resize_terminal(50, 14)
+            await pilot.pause()
+            first, last = view.window()
+            assert first <= view.cursor_day <= last

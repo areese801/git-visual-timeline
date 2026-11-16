@@ -28,7 +28,9 @@ CALENDAR_WEEKS = 53
 
 @dataclass
 class DayStats:
-    """Commit count and line totals for one bucket of time."""
+    """
+    Commit count and line totals for one bucket of time.
+    """
 
     commits: int = 0
     additions: int = 0
@@ -42,7 +44,9 @@ class DayStats:
 
 @dataclass
 class PeriodStats(DayStats):
-    """DayStats for a week, month, or year starting on `start`."""
+    """
+    DayStats for a week, month, or year starting on `start`.
+    """
 
     start: date = date.min
 
@@ -65,7 +69,9 @@ def bucket_by_day(commits: Iterable[CommitInfo], tz: tzinfo | None = None) -> di
 
 
 def week_start(d: date) -> date:
-    """Monday of the ISO week containing `d`."""
+    """
+    Monday of the ISO week containing `d`.
+    """
     return d - timedelta(days=d.weekday())
 
 
@@ -78,7 +84,9 @@ def calendar_window(anchor: date, weeks: int = CALENDAR_WEEKS) -> tuple[date, da
 
 
 def _nearest_rank(sorted_values: list[int], pct: float) -> int:
-    """Nearest-rank percentile of an ascending, non-empty list."""
+    """
+    Nearest-rank percentile of an ascending, non-empty list.
+    """
     rank = max(1, math.ceil(pct * len(sorted_values)))
     return sorted_values[rank - 1]
 
@@ -96,14 +104,18 @@ def quantile_levels(values: Iterable[int]) -> list[int]:
 
 
 def level_for(count: int, thresholds: list[int]) -> int:
-    """Shade level 0-4 for a count, given quantile_levels() thresholds."""
+    """
+    Shade level 0-4 for a count, given quantile_levels() thresholds.
+    """
     if count <= 0:
         return 0
     return 1 + sum(1 for t in thresholds if count > t)
 
 
 def period_start(d: date, granularity: Granularity) -> date:
-    """First day of the week (Monday), month, or year containing `d`."""
+    """
+    First day of the week (Monday), month, or year containing `d`.
+    """
     if granularity == "week":
         return week_start(d)
     if granularity == "month":
@@ -112,7 +124,9 @@ def period_start(d: date, granularity: Granularity) -> date:
 
 
 def next_period(start: date, granularity: Granularity) -> date:
-    """Start of the period after the one starting on `start`."""
+    """
+    Start of the period after the one starting on `start`.
+    """
     if granularity == "week":
         return start + timedelta(weeks=1)
     if granularity == "month":
@@ -123,7 +137,9 @@ def next_period(start: date, granularity: Granularity) -> date:
 
 
 def count_periods(first: date, last: date, granularity: Granularity) -> int:
-    """Number of periods from the one containing `first` to the one containing `last`."""
+    """
+    Number of periods from the one containing `first` to the one containing `last`.
+    """
     if granularity == "week":
         return (week_start(last) - week_start(first)).days // 7 + 1
     if granularity == "month":
@@ -163,7 +179,9 @@ def bin_periods(
 
 
 def period_label(start: date, granularity: Granularity) -> str:
-    """Human label for a period, e.g. 'Week of 2026-10-12', 'Oct 2026', '2026'."""
+    """
+    Human label for a period, e.g. 'Week of 2026-10-12', 'Oct 2026', '2026'.
+    """
     if granularity == "week":
         return f"Week of {start.isoformat()}"
     if granularity == "month":
@@ -214,7 +232,9 @@ def place_labels(positions: Iterable[tuple[int, str]], width: int, marker: str =
             row[col] = marker
 
     def fits(start: int, end: int, gap_before: bool, gap_after: bool) -> bool:
-        """Cells [start, end) are free, with blank neighbors where required."""
+        """
+        Cells [start, end) are free, with blank neighbors where required.
+        """
         if start < 0 or end > width or any(c != " " for c in row[start:end]):
             return False
         if gap_before and start > 0 and row[start - 1] != " ":
