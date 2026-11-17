@@ -25,6 +25,12 @@ MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 CALENDAR_WEEKS = 53
 
+# Shortest axis the frequency chart shows, so young files still get context
+MIN_SPAN: dict[str, int] = {"week": 52, "month": 24, "year": 1}
+
+# Widest column a single period gets when the axis is short
+MAX_COLUMN_WIDTH = 4
+
 
 @dataclass
 class DayStats:
@@ -136,6 +142,18 @@ def next_period(start: date, granularity: Granularity) -> date:
     return date(start.year + 1, 1, 1)
 
 
+def periods_before(start: date, granularity: Granularity, n: int) -> date:
+    """
+    Start of the period `n` periods before the one starting on `start`.
+    """
+    if granularity == "week":
+        return start - timedelta(weeks=n)
+    if granularity == "month":
+        index = start.year * 12 + start.month - 1 - n
+        return date(index // 12, index % 12 + 1, 1)
+    return date(start.year - n, 1, 1)
+
+
 def count_periods(first: date, last: date, granularity: Granularity) -> int:
     """
     Number of periods from the one containing `first` to the one containing `last`.
@@ -158,24 +176,54 @@ def choose_granularity(first: date, last: date, width: int) -> Granularity:
 
 
 def bin_periods(
-    commits: Iterable[CommitInfo], granularity: Granularity, tz: tzinfo | None = None
+    commits: Iterable[CommitInfo],
+    granularity: Granularity,
+    tz: tzinfo | None = None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[PeriodStats]:
     """
-    Contiguous, zero-filled periods from the oldest to the newest commit.
+    Contiguous, zero-filled periods covering every commit.
+
+    :param start: Optional day the range must reach back to.
+    :param end: Optional day the range must reach forward to.
     """
     by_start: dict[date, PeriodStats] = {}
     for commit in commits:
-        start = period_start(local_day(commit.date, tz), granularity)
-        by_start.setdefault(start, PeriodStats(start=start)).add(commit)
-    if not by_start:
+        key = period_start(local_day(commit.date, tz), granularity)
+        by_start.setdefault(key, PeriodStats(start=key)).add(commit)
+
+    bounds = list(by_start)
+    bounds += [period_start(d, granularity) for d in (start, end) if d is not None]
+    if not bounds:
         return []
 
     periods = []
-    current, last = min(by_start), max(by_start)
+    current, last = min(bounds), max(bounds)
     while current <= last:
         periods.append(by_start.get(current, PeriodStats(start=current)))
         current = next_period(current, granularity)
     return periods
+
+
+def frequency_layout(first: date, end: date, width: int) -> tuple[Granularity, date, int]:
+    """
+    Axis for the frequency chart: granularity, first period start, column width.
+
+    The axis runs to `end` (normally today) and reaches back far enough to fill
+    `width` columns, and never shows less than MIN_SPAN periods, so a young
+    file appears as recent activity against an empty past.
+
+    :param first: Day of the oldest commit.
+    :param end: Last day the axis must include.
+    :param width: Columns available for the chart.
+    """
+    granularity = choose_granularity(first, end, width)
+    span = count_periods(first, end, granularity)
+    column_width = max(1, min(MAX_COLUMN_WIDTH, width // max(span, MIN_SPAN[granularity])))
+    total = max(span, width // column_width)
+    axis_start = periods_before(period_start(end, granularity), granularity, total - 1)
+    return granularity, axis_start, column_width
 
 
 def period_label(start: date, granularity: Granularity) -> str:

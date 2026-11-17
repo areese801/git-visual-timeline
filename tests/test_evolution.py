@@ -10,6 +10,7 @@ from gvt.evolution import (
     bucket_by_day,
     calendar_window,
     choose_granularity,
+    frequency_layout,
     level_for,
     local_day,
     month_labels,
@@ -17,6 +18,7 @@ from gvt.evolution import (
     percentile_cap,
     period_label,
     period_start,
+    periods_before,
     place_labels,
     quantile_levels,
     tags_between,
@@ -127,6 +129,32 @@ class TestPeriods:
         assert [p.commits for p in periods] == [2, 0, 0, 1]
         assert periods[0].additions == 11
         assert periods[0].deletions == 3
+
+    def test_bin_periods_extends_to_start_and_end(self):
+        commits = [_commit(datetime(2026, 1, 14, tzinfo=UTC))]
+        periods = bin_periods(
+            commits, "week", UTC, start=date(2025, 12, 31), end=date(2026, 1, 28)
+        )
+        assert periods[0].start == date(2025, 12, 29)
+        assert periods[-1].start == date(2026, 1, 26)
+        assert [p.commits for p in periods] == [0, 0, 1, 0, 0]
+
+    def test_periods_before(self):
+        assert periods_before(date(2026, 11, 16), "week", 2) == date(2026, 11, 2)
+        assert periods_before(date(2026, 2, 1), "month", 3) == date(2025, 11, 1)
+        assert periods_before(date(2026, 1, 1), "year", 5) == date(2021, 1, 1)
+
+    def test_frequency_layout_young_file_fills_width_back_from_today(self):
+        granularity, start, width = frequency_layout(date(2026, 11, 15), date(2026, 11, 17), 113)
+        assert granularity == "week"
+        assert width == 2  # 113 // 52
+        assert start == date(2026, 11, 16) - timedelta(weeks=55)  # 56 columns of 2
+
+    def test_frequency_layout_long_history_keeps_its_span(self):
+        granularity, start, width = frequency_layout(date(2024, 1, 3), date(2026, 11, 17), 113)
+        assert granularity == "month"
+        assert width == 3  # 113 // 35 months
+        assert start == date(2023, 11, 1)  # 37 columns of 3, ending Nov 2026
 
     def test_bin_periods_empty(self):
         assert bin_periods([], "month", UTC) == []

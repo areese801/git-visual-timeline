@@ -172,15 +172,25 @@ RECENT = [
 ]
 
 
+TODAY = date(2026, 11, 20)
+
+
+def _frequency_view() -> FrequencyView:
+    view = FrequencyView(tz=UTC)
+    view.today = TODAY
+    return view
+
+
 class TestFrequencyView:
-    async def test_weekly_when_history_fits(self):
-        view = FrequencyView(tz=UTC)
+    async def test_short_history_fills_width_back_from_today(self):
+        view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
             await pilot.pause()
             assert view.granularity == "week"
-            assert view.periods[0].start == date(2026, 9, 7)
+            assert view.column_width == 2
+            assert len(view.periods) == 56
             assert view.periods[-1].start == date(2026, 11, 16)
             assert view.cursor == len(view.periods) - 1
             status = view.status_text().plain
@@ -188,18 +198,30 @@ class TestFrequencyView:
             assert "2 commits" in status
             assert "▲ v1.0" in status
 
+    async def test_axis_runs_to_today_past_the_last_commit(self):
+        view = _frequency_view()
+        view.today = date(2026, 12, 30)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.pause()
+            assert view.periods[-1].start == date(2026, 12, 28)
+            # Cursor still starts on the newest commit, not the empty current week
+            assert view.periods[view.cursor].start == date(2026, 11, 16)
+
     async def test_monthly_when_weekly_does_not_fit(self):
-        view = FrequencyView(tz=UTC)
+        view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(80, 16)) as pilot:
             view.set_data(COMMITS, TAGS)
             await pilot.pause()
             assert view.granularity == "month"
-            assert view.periods[0].start == date(2024, 1, 1)
+            assert view.periods[-1].start == date(2026, 11, 1)
+            assert view.periods[0].start <= date(2024, 1, 1)
             assert "Nov 2026" in view.status_text().plain
 
     async def test_cursor_moves_and_jumps(self):
-        view = FrequencyView(tz=UTC)
+        view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
@@ -207,14 +229,14 @@ class TestFrequencyView:
             assert view.cursor == len(view.periods) - 2
             await pilot.press("0")
             assert view.cursor == 0
-            assert "+40" in view.status_text().plain
+            assert "0 commits" in view.status_text().plain
             await pilot.press("h")
             assert view.cursor == 0
             await pilot.press("dollar_sign")
             assert view.cursor == len(view.periods) - 1
 
     async def test_enter_posts_period(self):
-        view = FrequencyView(tz=UTC)
+        view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
@@ -225,7 +247,7 @@ class TestFrequencyView:
             assert event.label == "Week of 2026-11-16"
 
     async def test_render_fills_height_with_bars_both_ways(self):
-        view = FrequencyView(tz=UTC)
+        view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
@@ -235,12 +257,16 @@ class TestFrequencyView:
             assert lines[0].lstrip().startswith("+")
             axis = [line for line in lines if "─" in line]
             assert len(axis) == 1
+            # Baseline spans the chart, with the cursor drawn on it
+            assert len(axis[0].rstrip()) >= 7 + 110
+            assert "━" in axis[0]
             chart = "\n".join(lines[:12])
             assert "█" in chart
             assert "2026" in lines[12]
+            assert "Dec" in lines[12]
 
     async def test_cursor_survives_rebinning(self):
-        view = FrequencyView(tz=UTC)
+        view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(COMMITS, TAGS)

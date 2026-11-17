@@ -4,7 +4,7 @@ GitHub Insights-style code frequency chart for the Evolution screen.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from rich.text import Text
 
@@ -15,7 +15,7 @@ from gvt.evolution import (
     axis_labels,
     bar_cells,
     bin_periods,
-    choose_granularity,
+    frequency_layout,
     local_day,
     next_period,
     percentile_cap,
@@ -37,13 +37,11 @@ from gvt.widgets.evolution_common import (
 )
 
 COLOR_BG = "#1a1b26"
-COLOR_CURSOR_BG = "#283457"
+COLOR_CURSOR = "#7aa2f7"
 
 GUTTER = 7
 # Rows below the chart: axis labels, tags, blank, status
 FOOTER_ROWS = 4
-# Widest column a single period gets when history is short
-MAX_COLUMN_WIDTH = 4
 
 
 def compact(n: int) -> str:
@@ -81,7 +79,10 @@ class FrequencyView(EvolutionView):
         self.granularity: Granularity = "week"
         self._periods: list[PeriodStats] = []
         self._cap = 1
+        self._column_width = 1
         self._layout_key: tuple[int, int] | None = None
+        # Last day on the axis; None means today (tests pin it)
+        self.today: date | None = None
 
     def on_data_changed(self) -> None:
         self._layout_key = None
@@ -94,26 +95,42 @@ class FrequencyView(EvolutionView):
     def chart_width(self) -> int:
         return max(1, self.size.width - GUTTER)
 
+    def _ensure_layout(self) -> None:
+        """
+        Re-bin periods and pick the axis when the width or data changed.
+        """
+        key = (self.chart_width, len(self.commits))
+        if key == self._layout_key or not self.commits:
+            return
+        days = [local_day(c.date, self.tz) for c in self.commits]
+        today = self.today or datetime.now(self.tz).date()
+        end = max(today, max(days))
+        self.granularity, axis_start, self._column_width = frequency_layout(
+            min(days), end, self.chart_width
+        )
+        self._periods = bin_periods(
+            self.commits, self.granularity, self.tz, start=axis_start, end=end
+        )
+        self._cap = percentile_cap(
+            [p.additions for p in self._periods] + [p.deletions for p in self._periods]
+        )
+        self._layout_key = key
+
     @property
     def periods(self) -> list[PeriodStats]:
         """
-        Periods for the current width (re-binned when the width changes).
+        Periods on the axis for the current width, oldest-first.
         """
-        key = (self.chart_width, len(self.commits))
-        if key != self._layout_key and self.commits:
-            days = [local_day(c.date, self.tz) for c in self.commits]
-            self.granularity = choose_granularity(min(days), max(days), self.chart_width)
-            self._periods = bin_periods(self.commits, self.granularity, self.tz)
-            self._cap = percentile_cap(
-                [p.additions for p in self._periods] + [p.deletions for p in self._periods]
-            )
-            self._layout_key = key
+        self._ensure_layout()
         return self._periods
 
     @property
     def column_width(self) -> int:
-        n = len(self.periods)
-        return max(1, min(MAX_COLUMN_WIDTH, self.chart_width // n)) if n else 1
+        """
+        Columns per period for the current width.
+        """
+        self._ensure_layout()
+        return self._column_width
 
     @property
     def cursor(self) -> int:
@@ -174,23 +191,22 @@ class FrequencyView(EvolutionView):
         end = next_period(p.start, self.granularity)
         return self._status_line(text, tags_between(self.tags, p.start, end, self.tz))
 
-    def _bar_cell(self, value: int, k: int, rows: int, up: bool, highlighted: bool) -> tuple[str, str]:
+    def _bar_cell(self, value: int, k: int, rows: int, up: bool) -> tuple[str, str]:
         """
         Glyph and style for cell k (0 = next to the axis) of a bar.
         """
         full, rem, clipped = bar_cells(value, self._cap, rows)
         color = COLOR_GREEN if up else COLOR_RED
-        bg = f" on {COLOR_CURSOR_BG}" if highlighted else ""
         if clipped and k == rows - 1:
-            return "█", COLOR_AMBER + bg
+            return "█", COLOR_AMBER
         if k < full:
-            return "█", color + bg
+            return "█", color
         if k == full and rem:
             if up:
-                return UP_BLOCKS[rem], color + bg
+                return UP_BLOCKS[rem], color
             # Fill from the top: paint the lower part in the background color
-            return UP_BLOCKS[8 - rem], f"{COLOR_CURSOR_BG if highlighted else COLOR_BG} on {color}"
-        return " ", bg.strip()
+            return UP_BLOCKS[8 - rem], f"{COLOR_BG} on {color}"
+        return " ", ""
 
     def render(self) -> Text:
         if self.message:
@@ -213,10 +229,10 @@ class FrequencyView(EvolutionView):
             line = Text(f"{gutter:>{GUTTER - 1}} ", style=COLOR_DIM)
             for i, p in enumerate(periods):
                 value = p.additions if up else p.deletions
-                glyph, style = self._bar_cell(value, k, rows, up, i == cursor)
+                glyph, style = self._bar_cell(value, k, rows, up)
                 line.append(glyph * bar_w, style=style)
                 if cw > bar_w:
-                    line.append(" " * (cw - bar_w), style=f"on {COLOR_CURSOR_BG}" if i == cursor else "")
+                    line.append(" " * (cw - bar_w))
             return line
 
         text = Text()
@@ -225,9 +241,13 @@ class FrequencyView(EvolutionView):
             text.append("\n")
 
         text.append(f"{'0':>{GUTTER - 1}} ", style=COLOR_DIM)
+        # The cursor is a bright segment on the baseline
         for i in range(len(periods)):
-            style = f"{COLOR_DIM} on {COLOR_CURSOR_BG}" if i == cursor else COLOR_DIM
-            text.append("─" * cw, style=style)
+            if i == cursor:
+                text.append("━" * bar_w, style=f"bold {COLOR_CURSOR}")
+                text.append("─" * (cw - bar_w), style=COLOR_DIM)
+            else:
+                text.append("─" * cw, style=COLOR_DIM)
         text.append("\n")
 
         for r in range(down_rows):
