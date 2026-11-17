@@ -265,6 +265,9 @@ class _StubRepo:
     def get_tags(self):
         return []
 
+    def get_first_commit_date(self):
+        return min(c.date for c in self.commits) if self.commits else None
+
 
 async def test_time_filter_passes_size_before_cutoff(fixture_repo):
     old = CommitInfo("a" * 40, datetime(2020, 1, 1, tzinfo=timezone.utc), "T", "old", 100, 20)

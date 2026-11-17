@@ -184,6 +184,7 @@ class EvolutionScreen(Screen):
         self.commits: list[CommitInfo] = []
         self._all_commits: list[CommitInfo] = []
         self._tags: list[TagInfo] = []
+        self._first_commit: datetime | None = None
         self._exclusions: Exclusions | None = None
         self._filtered: FilterResult | None = None
 
@@ -214,13 +215,14 @@ class EvolutionScreen(Screen):
         try:
             commits = self.git_repo.get_scope_commits(self.scope)
             tags = self.git_repo.get_tags()
+            first_commit = self.git_repo.get_first_commit_date()
             exclusions = Exclusions.load(self.git_repo.root, self.user_config)
         except (GitCommandError, OSError, ValueError) as e:
             log.warning("evolution history for %s failed: %s", self.scope, e)
             self.app.call_from_thread(self._show_message, "Couldn't read history (see log)")
             return
         filtered = exclusions.apply(commits)
-        self.app.call_from_thread(self._apply_history, commits, tags, exclusions, filtered)
+        self.app.call_from_thread(self._apply_history, commits, tags, first_commit, exclusions, filtered)
 
     def _views(self) -> list[EvolutionView]:
         return list(self.query(EvolutionView))
@@ -235,6 +237,7 @@ class EvolutionScreen(Screen):
         self,
         commits: list[CommitInfo],
         tags: list[TagInfo],
+        first_commit: datetime | None,
         exclusions: Exclusions,
         filtered: FilterResult,
     ) -> None:
@@ -242,6 +245,7 @@ class EvolutionScreen(Screen):
             return
         self._all_commits = commits
         self._tags = tags
+        self._first_commit = first_commit
         self._exclusions = exclusions
         self._filtered = filtered
         self.mode = exclusions.config.default_mode
@@ -291,6 +295,14 @@ class EvolutionScreen(Screen):
                 message += " (only excluded files changed; press x to show everything)"
             self._show_message(message)
             return
+        # The frequency axis spans the project's history (or the filtered window)
+        if cutoff:
+            history_start = local_day(cutoff, self.tz)
+        elif self._first_commit:
+            history_start = local_day(self._first_commit, self.tz)
+        else:
+            history_start = None
+        self.query_one(FrequencyView).history_start = history_start
         for view in self._views():
             view.set_data(commits, self._tags, base_size)
 

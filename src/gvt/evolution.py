@@ -15,7 +15,7 @@ from typing import Iterable, Literal
 
 from gvt.git.repo import CommitInfo, TagInfo
 
-Granularity = Literal["week", "month", "year"]
+Granularity = Literal["day", "week", "month", "year"]
 
 # Eighth blocks growing up from the baseline, indexed by eighths filled (0-8)
 UP_BLOCKS = " ▁▂▃▄▅▆▇█"
@@ -25,8 +25,10 @@ MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 CALENDAR_WEEKS = 53
 
-# Shortest axis the frequency chart shows, so young files still get context
-MIN_SPAN: dict[str, int] = {"week": 52, "month": 24, "year": 1}
+# Fewest periods the frequency chart shows, so a brand-new repo isn't one bar
+MIN_PERIODS = 8
+
+WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Widest column a single period gets when the axis is short
 MAX_COLUMN_WIDTH = 4
@@ -120,8 +122,10 @@ def level_for(count: int, thresholds: list[int]) -> int:
 
 def period_start(d: date, granularity: Granularity) -> date:
     """
-    First day of the week (Monday), month, or year containing `d`.
+    First day of the day, week (Monday), month, or year containing `d`.
     """
+    if granularity == "day":
+        return d
     if granularity == "week":
         return week_start(d)
     if granularity == "month":
@@ -133,6 +137,8 @@ def next_period(start: date, granularity: Granularity) -> date:
     """
     Start of the period after the one starting on `start`.
     """
+    if granularity == "day":
+        return start + timedelta(days=1)
     if granularity == "week":
         return start + timedelta(weeks=1)
     if granularity == "month":
@@ -146,6 +152,8 @@ def periods_before(start: date, granularity: Granularity, n: int) -> date:
     """
     Start of the period `n` periods before the one starting on `start`.
     """
+    if granularity == "day":
+        return start - timedelta(days=n)
     if granularity == "week":
         return start - timedelta(weeks=n)
     if granularity == "month":
@@ -158,6 +166,8 @@ def count_periods(first: date, last: date, granularity: Granularity) -> int:
     """
     Number of periods from the one containing `first` to the one containing `last`.
     """
+    if granularity == "day":
+        return (last - first).days + 1
     if granularity == "week":
         return (week_start(last) - week_start(first)).days // 7 + 1
     if granularity == "month":
@@ -169,7 +179,7 @@ def choose_granularity(first: date, last: date, width: int) -> Granularity:
     """
     Finest granularity whose period count fits in `width` columns.
     """
-    for granularity in ("week", "month"):
+    for granularity in ("day", "week", "month"):
         if count_periods(first, last, granularity) <= width:
             return granularity
     return "year"
@@ -206,30 +216,38 @@ def bin_periods(
     return periods
 
 
-def frequency_layout(first: date, end: date, width: int) -> tuple[Granularity, date, int]:
+def frequency_layout(
+    first: date, end: date, width: int, history_start: date | None = None
+) -> tuple[Granularity, date, int]:
     """
     Axis for the frequency chart: granularity, first period start, column width.
 
-    The axis runs to `end` (normally today) and reaches back far enough to fill
-    `width` columns, and never shows less than MIN_SPAN periods, so a young
-    file appears as recent activity against an empty past.
+    The axis spans the project's history: from `history_start` (the repo's
+    first commit, or a time-filter cutoff) to `end` (normally today), so a new
+    file in an old repo appears as late activity against the project's past,
+    while a young repo fills the chart with its own life. The finest
+    granularity that fits is used, and at least MIN_PERIODS periods show.
 
-    :param first: Day of the oldest commit.
+    :param first: Day of the scope's oldest commit.
     :param end: Last day the axis must include.
     :param width: Columns available for the chart.
+    :param history_start: Day the axis should reach back to, if earlier than `first`.
     """
-    granularity = choose_granularity(first, end, width)
-    span = count_periods(first, end, granularity)
-    column_width = max(1, min(MAX_COLUMN_WIDTH, width // max(span, MIN_SPAN[granularity])))
-    total = max(span, width // column_width)
+    start = min(first, history_start) if history_start else first
+    granularity = choose_granularity(start, end, width)
+    total = max(count_periods(start, end, granularity), MIN_PERIODS)
+    column_width = max(1, min(MAX_COLUMN_WIDTH, width // total))
     axis_start = periods_before(period_start(end, granularity), granularity, total - 1)
     return granularity, axis_start, column_width
 
 
 def period_label(start: date, granularity: Granularity) -> str:
     """
-    Human label for a period, e.g. 'Week of 2026-10-12', 'Oct 2026', '2026'.
+    Human label for a period, e.g. 'Tue 2026-10-13', 'Week of 2026-10-12',
+    'Oct 2026', '2026'.
     """
+    if granularity == "day":
+        return f"{WEEKDAY_NAMES[start.weekday()]} {start.isoformat()}"
     if granularity == "week":
         return f"Week of {start.isoformat()}"
     if granularity == "month":
@@ -398,7 +416,7 @@ def axis_labels(starts: list[date], granularity: Granularity) -> list[tuple[int,
     """
     if not starts:
         return []
-    short = (granularity == "week" and len(starts) < 104) or (
+    short = granularity == "day" or (granularity == "week" and len(starts) < 104) or (
         granularity == "month" and len(starts) < 24
     )
 

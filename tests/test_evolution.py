@@ -103,17 +103,20 @@ class TestLevels:
 class TestPeriods:
     def test_period_start(self):
         d = date(2026, 11, 19)
+        assert period_start(d, "day") == d
         assert period_start(d, "week") == date(2026, 11, 16)
         assert period_start(d, "month") == date(2026, 11, 1)
         assert period_start(d, "year") == date(2026, 1, 1)
 
     def test_next_period_rolls_over(self):
+        assert next_period(date(2026, 12, 31), "day") == date(2027, 1, 1)
         assert next_period(date(2026, 12, 28), "week") == date(2027, 1, 4)
         assert next_period(date(2026, 12, 1), "month") == date(2027, 1, 1)
         assert next_period(date(2026, 1, 1), "year") == date(2027, 1, 1)
 
     def test_choose_granularity(self):
         first = date(2024, 1, 1)
+        assert choose_granularity(first, date(2024, 2, 15), 80) == "day"
         assert choose_granularity(first, date(2024, 6, 1), 80) == "week"
         assert choose_granularity(first, date(2026, 1, 1), 80) == "month"
         assert choose_granularity(date(1990, 1, 1), date(2026, 1, 1), 80) == "year"
@@ -145,26 +148,43 @@ class TestPeriods:
         assert [p.commits for p in periods] == [0, 0, 1, 0, 0]
 
     def test_periods_before(self):
+        assert periods_before(date(2026, 3, 2), "day", 2) == date(2026, 2, 28)
         assert periods_before(date(2026, 11, 16), "week", 2) == date(2026, 11, 2)
         assert periods_before(date(2026, 2, 1), "month", 3) == date(2025, 11, 1)
         assert periods_before(date(2026, 1, 1), "year", 5) == date(2021, 1, 1)
 
-    def test_frequency_layout_young_file_fills_width_back_from_today(self):
-        granularity, start, width = frequency_layout(date(2026, 11, 15), date(2026, 11, 17), 113)
-        assert granularity == "week"
-        assert width == 2  # 113 // 52
-        assert start == date(2026, 11, 16) - timedelta(weeks=55)  # 56 columns of 2
+    def test_frequency_layout_spans_project_history(self):
+        # A new file in a repo that began in April: axis starts at the repo's start
+        granularity, start, width = frequency_layout(
+            date(2026, 11, 15), date(2026, 11, 17), 113, history_start=date(2026, 4, 2)
+        )
+        assert granularity == "week"  # 230 days don't fit 113 columns; 33 weeks do
+        assert start == date(2026, 3, 30)
+        assert width == 3  # 113 // 33
+
+    def test_frequency_layout_young_repo_uses_daily_bars(self):
+        granularity, start, width = frequency_layout(date(2026, 8, 30), date(2026, 11, 17), 113)
+        assert granularity == "day"  # 80 days fit
+        assert start == date(2026, 8, 30)
+        assert width == 1
+
+    def test_frequency_layout_brand_new_repo_shows_minimum_periods(self):
+        granularity, start, width = frequency_layout(date(2026, 11, 16), date(2026, 11, 17), 113)
+        assert granularity == "day"
+        assert start == date(2026, 11, 10)  # 8 days ending today
+        assert width == 4
 
     def test_frequency_layout_long_history_keeps_its_span(self):
         granularity, start, width = frequency_layout(date(2024, 1, 3), date(2026, 11, 17), 113)
         assert granularity == "month"
         assert width == 3  # 113 // 35 months
-        assert start == date(2023, 11, 1)  # 37 columns of 3, ending Nov 2026
+        assert start == date(2024, 1, 1)
 
     def test_bin_periods_empty(self):
         assert bin_periods([], "month", UTC) == []
 
     def test_period_label(self):
+        assert period_label(date(2026, 10, 13), "day") == "Tue 2026-10-13"
         assert period_label(date(2026, 10, 12), "week") == "Week of 2026-10-12"
         assert period_label(date(2026, 10, 1), "month") == "Oct 2026"
         assert period_label(date(2026, 1, 1), "year") == "2026"

@@ -241,6 +241,17 @@ class GitRepo:
         except GitCommandError:
             return None
 
+    def get_first_commit_date(self) -> datetime | None:
+        """
+        Date of the repo's oldest root commit, or None when there are no commits.
+        """
+        try:
+            output = self.repo.git.log("--max-parents=0", "--format=%at", "HEAD")
+        except GitCommandError:
+            return None
+        stamps = [int(line) for line in output.split() if line.isdigit()]
+        return datetime.fromtimestamp(min(stamps), tz=timezone.utc) if stamps else None
+
     def get_tags(self) -> list[TagInfo]:
         """
         List tags with the date of the commit each one points at, oldest-first.

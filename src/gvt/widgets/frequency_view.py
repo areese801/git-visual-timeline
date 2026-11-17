@@ -103,6 +103,8 @@ class FrequencyView(EvolutionView):
         self._layout_key: tuple[int, int] | None = None
         # Last day on the axis; None means today (tests pin it)
         self.today: date | None = None
+        # First day on the axis: the repo's first commit or a time-filter cutoff
+        self.history_start: date | None = None
 
     def on_data_changed(self) -> None:
         self._layout_key = None
@@ -126,7 +128,7 @@ class FrequencyView(EvolutionView):
         today = self.today or datetime.now(self.tz).date()
         end = max(today, max(days))
         self.granularity, axis_start, self._column_width = frequency_layout(
-            min(days), end, self.chart_width
+            min(days), end, self.chart_width, self.history_start
         )
         self._periods = bin_periods(
             self.commits, self.granularity, self.tz, start=axis_start, end=end

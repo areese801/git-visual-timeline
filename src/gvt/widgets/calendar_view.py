@@ -10,6 +10,7 @@ from rich.text import Text
 
 from gvt.evolution import (
     CALENDAR_WEEKS,
+    WEEKDAY_NAMES,
     DayStats,
     bucket_by_day,
     calendar_window,
@@ -38,7 +39,6 @@ COLOR_CURSOR_FG = "#1a1b26"
 LEVEL_CHARS = ["·", "░", "▒", "▓", "█"]
 DAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", ""]
 GUTTER = 4
-WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Weeks moved by [ and ]
 PAGE_WEEKS = 52

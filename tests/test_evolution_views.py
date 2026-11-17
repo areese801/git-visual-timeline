@@ -182,21 +182,34 @@ def _frequency_view() -> FrequencyView:
 
 
 class TestFrequencyView:
-    async def test_short_history_fills_width_back_from_today(self):
+    async def test_young_history_uses_daily_bars(self):
         view = _frequency_view()
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
             await pilot.pause()
-            assert view.granularity == "week"
-            assert view.column_width == 2
-            assert len(view.periods) == 56
-            assert view.periods[-1].start == date(2026, 11, 16)
-            assert view.cursor == len(view.periods) - 1
+            assert view.granularity == "day"
+            assert view.column_width == 1
+            assert view.periods[0].start == date(2026, 9, 7)
+            assert view.periods[-1].start == TODAY
+            assert view.periods[view.cursor].start == date(2026, 11, 18)
             status = view.status_text().plain
-            assert "Week of 2026-11-16" in status
+            assert "Wed 2026-11-18" in status
             assert "2 commits" in status
-            assert "▲ v1.0" in status
+            await pilot.press("h", "h")
+            assert "▲ v1.0" in view.status_text().plain  # tagged on Mon 11-16
+
+    async def test_history_start_extends_axis_back(self):
+        view = _frequency_view()
+        view.history_start = date(2026, 1, 1)
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.pause()
+            assert view.granularity == "week"
+            assert view.periods[0].start == date(2025, 12, 29)
+            assert view.periods[-1].start == date(2026, 11, 16)
+            assert view.column_width == 2  # 113 // 47 weeks
 
     async def test_axis_runs_to_today_past_the_last_commit(self):
         view = _frequency_view()
@@ -205,6 +218,7 @@ class TestFrequencyView:
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
             await pilot.pause()
+            assert view.granularity == "week"  # 115 days don't fit 113 columns
             assert view.periods[-1].start == date(2026, 12, 28)
             # Cursor still starts on the newest commit, not the empty current week
             assert view.periods[view.cursor].start == date(2026, 11, 16)
@@ -216,8 +230,8 @@ class TestFrequencyView:
             view.set_data(COMMITS, TAGS)
             await pilot.pause()
             assert view.granularity == "month"
+            assert view.periods[0].start == date(2024, 1, 1)
             assert view.periods[-1].start == date(2026, 11, 1)
-            assert view.periods[0].start <= date(2024, 1, 1)
             assert "Nov 2026" in view.status_text().plain
 
     async def test_cursor_moves_and_jumps(self):
@@ -225,11 +239,12 @@ class TestFrequencyView:
         host = ViewHost(view)
         async with host.run_test(size=(120, 16)) as pilot:
             view.set_data(RECENT, TAGS)
+            start = view.cursor
             await pilot.press("h")
-            assert view.cursor == len(view.periods) - 2
+            assert view.cursor == start - 1
             await pilot.press("0")
             assert view.cursor == 0
-            assert "0 commits" in view.status_text().plain
+            assert "+40" in view.status_text().plain
             await pilot.press("h")
             assert view.cursor == 0
             await pilot.press("dollar_sign")
@@ -243,8 +258,8 @@ class TestFrequencyView:
             await pilot.press("enter")
             await pilot.pause()
             event = host.chosen[0]
-            assert (event.start, event.end) == (date(2026, 11, 16), date(2026, 11, 23))
-            assert event.label == "Week of 2026-11-16"
+            assert (event.start, event.end) == (date(2026, 11, 18), date(2026, 11, 19))
+            assert event.label == "Wed 2026-11-18"
 
     async def test_render_fills_height_with_bars_both_ways(self):
         view = _frequency_view()
@@ -257,13 +272,13 @@ class TestFrequencyView:
             assert lines[0].lstrip().startswith("+")
             axis = [line for line in lines if "─" in line]
             assert len(axis) == 1
-            # Baseline spans the chart, with the cursor drawn on it
-            assert len(axis[0].rstrip()) >= 7 + 110
+            # Baseline spans the axis, with the cursor drawn on it
+            assert len(axis[0].rstrip()) == 7 + len(view.periods)
             assert "━" in axis[0]
             chart = "\n".join(lines[:12])
             assert "█" in chart
             assert "2026" in lines[12]
-            assert "Dec" in lines[12]
+            assert "Oct" in lines[12]
 
     async def test_cursor_survives_rebinning(self):
         view = _frequency_view()

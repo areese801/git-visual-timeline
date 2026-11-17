@@ -159,3 +159,16 @@ def test_scope_commits_handle_renames_and_binaries(git_repo, fixture_repo):
     paths = dict((path, (adds, dels)) for path, adds, dels in newest.files)
     assert paths["logo.bin"] == (0, 0)
     assert "README.rst" in paths
+
+
+def test_first_commit_date(git_repo, fixture_repo):
+    first = list(Repo(fixture_repo).iter_commits("HEAD", reverse=True))[0]
+    assert git_repo.get_first_commit_date() == first.authored_datetime.astimezone(
+        git_repo.get_first_commit_date().tzinfo
+    ).replace(microsecond=0)
+
+
+def test_first_commit_date_empty_repo(tmp_path):
+    repo_dir = str(tmp_path / "empty")
+    Repo.init(repo_dir)
+    assert GitRepo(repo_dir).get_first_commit_date() is None
