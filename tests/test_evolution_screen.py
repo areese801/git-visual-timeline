@@ -1,6 +1,10 @@
 """Integration tests for the Evolution screen inside the full app."""
 
+import os
 from datetime import datetime, timezone
+
+from git import Repo
+from textual.widgets import Static
 
 from gvt.app import GVTApp
 from gvt.git.repo import CommitInfo
@@ -8,7 +12,7 @@ from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.evolution_screen import EvolutionScreen, in_scope, summarize
 from gvt.widgets.frequency_view import FrequencyView
-from gvt.widgets.modals import CommitFilesModal, CommitSearchModal
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionRulesModal
 from gvt.widgets.timeline import TimelineWidget
 
 SIZE = (130, 40)
@@ -251,8 +255,9 @@ async def test_unexpected_load_error_shows_message_not_crash(fixture_repo, monke
 class _StubRepo:
     """Minimal GitRepo stand-in with fixed history."""
 
-    def __init__(self, commits):
+    def __init__(self, commits, root="/nonexistent-repo"):
         self.commits = commits
+        self.root = root
 
     def get_scope_commits(self, path):
         return self.commits
@@ -285,3 +290,75 @@ async def test_legend_follows_the_active_view(fixture_repo):
         await pilot.pause()
         rendered = str(legend.render())
         assert "volume" in rendered and "year" not in rendered
+
+
+def _add_lockfile_commits(repo_dir: str) -> None:
+    """
+    One commit touching code + a lockfile, one touching only the lockfile.
+    """
+    repo = Repo(repo_dir)
+    with open(os.path.join(repo_dir, "pnpm-lock.yaml"), "w") as f:
+        f.write("lock: 1\n" * 50)
+    with open(os.path.join(repo_dir, "hello.py"), "a") as f:
+        f.write("print('more')\n")
+    repo.index.add(["pnpm-lock.yaml", "hello.py"])
+    repo.index.commit("Add dependency")
+    with open(os.path.join(repo_dir, "pnpm-lock.yaml"), "a") as f:
+        f.write("lock: 2\n" * 20)
+    repo.index.add(["pnpm-lock.yaml"])
+    repo.index.commit("Bump lockfile")
+
+
+async def test_authored_mode_drops_lockfile_lines_and_x_toggles(fixture_repo):
+    _add_lockfile_commits(fixture_repo)
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        assert screen.mode == "authored"
+        assert len(screen.commits) == 7  # lockfile-only commit dropped
+        newest = screen.commits[0]
+        assert newest.message == "Add dependency"
+        assert (newest.additions, newest.deletions) == (1, 0)
+        summary = str(screen.query_one("#evolution-summary").render())
+        assert summary.startswith("authored")
+        assert "70 lines excluded" in summary
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert screen.mode == "everything"
+        assert len(screen.commits) == 8
+        assert str(screen.query_one("#evolution-summary").render()).startswith("everything")
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert len(screen.commits) == 7
+
+
+async def test_shift_x_lists_rules(fixture_repo):
+    _add_lockfile_commits(fixture_repo)
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await _open_evolution(app, pilot)
+        await pilot.press("X")
+        await pilot.pause()
+        assert isinstance(app.screen, ExclusionRulesModal)
+        text = str(app.screen.query_one(Static).render())
+        assert "70 lines excluded" in text
+        assert "preset:lockfiles  pnpm-lock.yaml" in text
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, EvolutionScreen)
+
+
+async def test_repo_config_sets_default_mode(fixture_repo):
+    _add_lockfile_commits(fixture_repo)
+    with open(os.path.join(fixture_repo, ".gvt.toml"), "w") as f:
+        f.write('[evolution]\ndefault_mode = "everything"\n')
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        assert screen.mode == "everything"
+        assert len(screen.commits) == 8

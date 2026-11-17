@@ -79,6 +79,33 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 
 `Tab` switches views and `Esc` goes back. An active time filter (`t`) carries over.
 
+#### Authored vs everything
+
+Lockfiles, generated snapshots, minified bundles and vendored code are committed on purpose but say little about how a project evolves. By default the Evolution views count only **authored** code; press `x` to include everything, or `X` to see which rules removed what. `gvt --show-rules` prints the rules for the current repo.
+
+Rules come from these layers, in order. The last matching rule wins, and a leading `!` brings a path back:
+
+1. **Built-in presets.** On by default: `lockfiles`, `minified`, `generated` (snapshots, `*.tsbuildinfo`, migration snapshots) and `vendored`. Also available: `docs` (`docs/`, `*.md`, `*.rst`) and `data` (`*.json`, `*.csv`, `*.svg`).
+2. **`.gitattributes`** files marked `linguist-generated`, `linguist-vendored` or `linguist-documentation`, the same markers GitHub uses.
+3. **Your config** at `~/.config/gvt/config.toml` (or the path in `$GVT_CONFIG`).
+4. **The repo's `.gvt.toml`**, which you can commit to share with your team.
+
+```toml
+[evolution]
+default_mode = "authored"        # or "everything"
+presets = ["lockfiles", "minified", "generated", "vendored", "docs"]
+use_gitattributes = true
+exclude = [
+  "packages/core/src/data/**",    # gitignore-style globs
+  "re:^docs/prototype/",          # re: for a regular expression
+  "!docs/architecture.md",        # ! re-includes
+]
+ignore_files = [{ path = ".clocignore", syntax = "regex" }]  # reuse an existing list
+ignore_revs = ".git-blame-ignore-revs"                       # drop formatting-only commits
+```
+
+Commits that touch only excluded files (like a lockfile bump) don't count in authored mode. Commits listed in `.git-blame-ignore-revs` are left out by default.
+
 ### All Features
 
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
@@ -146,6 +173,8 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 | `[` / `]` | Page back/forward a year (calendar) |
 | `0`/`$` | First/last period (frequency) |
 | `m` | Toggle volume mode (frequency) |
+| `x` | Toggle authored only / everything |
+| `X` | Show exclusion rules |
 | `Enter` | List commits, then open one in the timeline |
 | `Esc` | Back |
 

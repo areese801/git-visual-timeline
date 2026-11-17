@@ -124,3 +124,38 @@ def test_get_tags_lists_lightweight_and_annotated(git_repo, fixture_repo):
     assert tags[0].hexsha == commits[1].hexsha
     assert tags[1].hexsha == commits[4].hexsha
     assert tags[0].date <= tags[1].date
+
+
+def test_scope_commits_carry_per_file_stats(git_repo):
+    newest = git_repo.get_scope_commits(".")[0]
+    assert sorted(newest.files) == [("hello.py", 1, 0), ("src/app.py", 4, 1)]
+    assert newest.additions == sum(f[1] for f in newest.files)
+    assert newest.deletions == sum(f[2] for f in newest.files)
+
+
+def test_scope_commit_files_limited_to_scope(git_repo):
+    newest = git_repo.get_scope_commits("src")[0]
+    assert newest.files == [("src/app.py", 4, 1)]
+
+
+def test_numstat_rename_paths_resolve_to_new_name():
+    assert GitRepo._numstat_path("src/{old.py => new.py}") == "src/new.py"
+    assert GitRepo._numstat_path("{a => b}/x.py") == "b/x.py"
+    assert GitRepo._numstat_path("src/{ => gvt}/app.py") == "src/gvt/app.py"
+    assert GitRepo._numstat_path("src/{gvt => }/app.py") == "src/app.py"
+    assert GitRepo._numstat_path("old.py => new.py") == "new.py"
+    assert GitRepo._numstat_path("plain.py") == "plain.py"
+
+
+def test_scope_commits_handle_renames_and_binaries(git_repo, fixture_repo):
+    repo = Repo(fixture_repo)
+    repo.index.move(["README.md", "README.rst"])
+    with open(os.path.join(fixture_repo, "logo.bin"), "wb") as f:
+        f.write(bytes(range(256)))
+    repo.index.add(["logo.bin"])
+    repo.index.commit("Rename readme, add binary")
+
+    newest = git_repo.get_scope_commits(".")[0]
+    paths = dict((path, (adds, dels)) for path, adds, dels in newest.files)
+    assert paths["logo.bin"] == (0, 0)
+    assert "README.rst" in paths

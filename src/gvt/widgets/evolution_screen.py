@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, tzinfo
 from functools import partial
+from pathlib import Path
 
 from git.exc import GitCommandError
 from rich.text import Text
@@ -16,12 +17,13 @@ from textual.screen import Screen
 from textual.widgets import Static, TabbedContent, TabPane, Tabs
 
 from gvt.evolution import bucket_by_day, local_day
+from gvt.exclusions import USER_CONFIG, Exclusions, FilterResult
 from gvt.git.repo import CommitInfo, GitRepo, TagInfo
 from gvt.logging_setup import get_logger
 from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.evolution_common import EvolutionView, PeriodChosen, plural
-from gvt.widgets.frequency_view import FrequencyView
-from gvt.widgets.modals import CommitFilesModal, CommitSearchModal
+from gvt.widgets.frequency_view import FrequencyView, compact
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionRulesModal
 from gvt.widgets.timeline import parse_time_filter
 
 log = get_logger(__name__)
@@ -38,17 +40,16 @@ LEGENDS = {
         ("Tab", "views"),
         ("h/j/k/l", "move"),
         ("[ ]", "year"),
-        ("Enter", "commits"),
-        ("?", "help"),
+        ("x", "excludes"),
+        ("Enter", "list"),
         ("Esc", "back"),
     ],
     "frequency": [
         ("Tab", "views"),
         ("h/l", "move"),
-        ("0/$", "ends"),
         ("m", "volume"),
-        ("Enter", "commits"),
-        ("?", "help"),
+        ("x", "excludes"),
+        ("Enter", "list"),
         ("Esc", "back"),
     ],
 }
@@ -145,6 +146,8 @@ class EvolutionScreen(Screen):
         ("shift+tab", "cycle_view(-1)", "Prev view"),
         ("1", "show_view('calendar')", "Calendar"),
         ("2", "show_view('frequency')", "Frequency"),
+        ("x", "toggle_excludes", "Authored/everything"),
+        ("X", "show_rules", "Exclusion rules"),
     ]
 
     def __init__(
@@ -155,6 +158,7 @@ class EvolutionScreen(Screen):
         scope_is_file: bool,
         time_filter: str = "",
         tz: tzinfo | None = None,
+        user_config: Path | None = USER_CONFIG,
         **kwargs,
     ) -> None:
         """
@@ -164,6 +168,7 @@ class EvolutionScreen(Screen):
         :param scope_is_file: Whether Enter can jump straight to the scope file.
         :param time_filter: Active timeline filter ('3m', 'YYYY-MM-DD', '').
         :param tz: Time zone for day bucketing (None = local).
+        :param user_config: User config for exclusion rules (see gvt.exclusions).
         """
         super().__init__(**kwargs)
         self.git_repo = git_repo
@@ -172,7 +177,15 @@ class EvolutionScreen(Screen):
         self.scope_is_file = scope_is_file
         self.time_filter = time_filter
         self.tz = tz
+        self.user_config = user_config
+        # "authored" leaves out excluded files; "everything" shows all lines
+        self.mode = "authored"
+        # Commits currently shown (after exclusions and the time filter)
         self.commits: list[CommitInfo] = []
+        self._all_commits: list[CommitInfo] = []
+        self._tags: list[TagInfo] = []
+        self._exclusions: Exclusions | None = None
+        self._filtered: FilterResult | None = None
 
     def compose(self) -> ComposeResult:
         with Container(id="evolution-container"):
@@ -201,17 +214,13 @@ class EvolutionScreen(Screen):
         try:
             commits = self.git_repo.get_scope_commits(self.scope)
             tags = self.git_repo.get_tags()
+            exclusions = Exclusions.load(self.git_repo.root, self.user_config)
         except (GitCommandError, OSError, ValueError) as e:
             log.warning("evolution history for %s failed: %s", self.scope, e)
             self.app.call_from_thread(self._show_message, "Couldn't read history (see log)")
             return
-
-        base_size = 0
-        cutoff = parse_time_filter(self.time_filter, datetime.now(tz=timezone.utc))
-        if cutoff:
-            base_size = sum(c.additions - c.deletions for c in commits if c.date < cutoff)
-            commits = [c for c in commits if c.date >= cutoff]
-        self.app.call_from_thread(self._apply_history, commits, tags, base_size)
+        filtered = exclusions.apply(commits)
+        self.app.call_from_thread(self._apply_history, commits, tags, exclusions, filtered)
 
     def _views(self) -> list[EvolutionView]:
         return list(self.query(EvolutionView))
@@ -222,19 +231,79 @@ class EvolutionScreen(Screen):
         for view in self._views():
             view.set_message(message)
 
-    def _apply_history(self, commits: list[CommitInfo], tags: list[TagInfo], base_size: int) -> None:
+    def _apply_history(
+        self,
+        commits: list[CommitInfo],
+        tags: list[TagInfo],
+        exclusions: Exclusions,
+        filtered: FilterResult,
+    ) -> None:
         if not self.is_attached:
             return
+        self._all_commits = commits
+        self._tags = tags
+        self._exclusions = exclusions
+        self._filtered = filtered
+        self.mode = exclusions.config.default_mode
+        for warning in exclusions.config.warnings:
+            self.notify(warning, title="Exclusion rules", severity="warning", timeout=6)
+        self._show()
+
+    def _mode_text(self) -> Text:
+        text = Text()
+        text.append(self.mode, style="bold #bb9af7")
+        if self.mode == "authored" and self._filtered is not None:
+            excluded = self._filtered.excluded_lines
+            text.append("  ·  ", style="#565f89")
+            if excluded:
+                text.append(f"{compact(excluded)} lines excluded", style="#565f89")
+            else:
+                text.append("nothing excluded", style="#565f89")
+        return text
+
+    def _show(self) -> None:
+        """
+        Push the commits for the current mode and time filter to the views.
+        """
+        if self.mode == "authored" and self._filtered is not None:
+            commits = self._filtered.commits
+        else:
+            commits = self._all_commits
+
+        base_size = 0
+        cutoff = parse_time_filter(self.time_filter, datetime.now(tz=timezone.utc))
+        if cutoff:
+            base_size = sum(c.additions - c.deletions for c in commits if c.date < cutoff)
+            commits = [c for c in commits if c.date >= cutoff]
         self.commits = commits
+
+        summary = self._mode_text()
+        if commits:
+            summary.append("  ·  ", style="#565f89")
+            summary.append_text(summarize(commits, self.tz))
+        self.query_one("#evolution-summary", Static).update(summary)
+
         if not commits:
             message = f"No commits touch {self.scope_label}"
             if self.time_filter:
                 message += f" since {self.time_filter}"
+            if self.mode == "authored" and self._all_commits:
+                message += " (only excluded files changed; press x to show everything)"
             self._show_message(message)
             return
-        self.query_one("#evolution-summary", Static).update(summarize(commits, self.tz))
         for view in self._views():
-            view.set_data(commits, tags, base_size)
+            view.set_data(commits, self._tags, base_size)
+
+    def action_toggle_excludes(self) -> None:
+        if self._exclusions is None:
+            return
+        self.mode = "everything" if self.mode == "authored" else "authored"
+        self._show()
+
+    def action_show_rules(self) -> None:
+        if self._exclusions is None or self._filtered is None:
+            return
+        self.app.push_screen(ExclusionRulesModal(self._exclusions, self._filtered))
 
     # Tabs
 

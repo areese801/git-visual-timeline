@@ -10,6 +10,14 @@ from git import Repo
 from gvt.git.repo import GitRepo
 
 
+@pytest.fixture(autouse=True)
+def isolated_user_config(tmp_path, monkeypatch):
+    """
+    Keep the developer's ~/.config/gvt/config.toml out of every test.
+    """
+    monkeypatch.setenv("GVT_CONFIG", str(tmp_path / "no-user-config.toml"))
+
+
 @pytest.fixture
 def fixture_repo(tmp_path):
     """

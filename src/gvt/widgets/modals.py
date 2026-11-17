@@ -12,6 +12,7 @@ from textual.widget import Widget
 from textual.widgets import Input, Label, Static
 from rich.text import Text
 
+from gvt.exclusions import Exclusions, FilterResult
 from gvt.git.repo import CommitInfo
 
 try:
@@ -679,6 +680,8 @@ class HelpModal(ModalScreen):
                 ("[ / ]", "Page back/forward a year (calendar)"),
                 ("0/$", "First/last period (frequency)"),
                 ("m", "Volume mode: size over time + churn (frequency)"),
+                ("x", "Toggle authored only / everything"),
+                ("X", "Show exclusion rules"),
                 ("Enter", "List commits → open in timeline"),
                 ("Esc", "Back to panes"),
             ]),
@@ -692,6 +695,82 @@ class HelpModal(ModalScreen):
             text.append("\n")
 
         with Container(id="help-container"):
+            yield Static(text)
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+
+class ExclusionRulesModal(ModalScreen):
+    """
+    What authored mode leaves out: lines removed per rule, and every active rule.
+    """
+
+    DEFAULT_CSS = """
+    ExclusionRulesModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.7);
+    }
+
+    #exclusion-rules-container {
+        width: 80%;
+        height: 80%;
+        background: #1a1b26;
+        border: solid #7aa2f7;
+        padding: 1 2;
+        overflow-y: auto;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "dismiss_modal", "Close"),
+        ("q", "dismiss_modal", "Close"),
+        ("X", "dismiss_modal", "Close"),
+    ]
+
+    # Rules listed in the "lines removed" table
+    TOP_RULES = 15
+
+    def __init__(self, exclusions: Exclusions, result: FilterResult, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.exclusions = exclusions
+        self.result = result
+
+    def compose(self) -> ComposeResult:
+        config = self.exclusions.config
+        text = Text()
+        text.append("Exclusions", style=f"bold {COLOR_ACCENT}")
+        text.append("  authored mode leaves these out\n", style=COLOR_DIM)
+        text.append(f"  {self.result.excluded_lines:,} lines excluded", style=COLOR_TEXT)
+        text.append(f"  ·  {self.result.dropped_commits:,} commits dropped\n\n", style=COLOR_TEXT)
+
+        text.append("  Lines removed by rule\n", style=f"bold {COLOR_AMBER}")
+        ranked = sorted(self.result.by_rule.items(), key=lambda item: -item[1])
+        for label, lines in ranked[: self.TOP_RULES]:
+            text.append(f"    {lines:>10,}  ", style=COLOR_RED)
+            text.append(f"{label}\n", style=COLOR_TEXT)
+        if not ranked:
+            text.append("    (nothing in this scope matched)\n", style=COLOR_DIM)
+        elif len(ranked) > self.TOP_RULES:
+            text.append(f"    … {len(ranked) - self.TOP_RULES} more\n", style=COLOR_DIM)
+
+        text.append("\n  All rules", style=f"bold {COLOR_AMBER}")
+        text.append("  (last match wins, ! re-includes)\n", style=COLOR_DIM)
+        for rule in self.exclusions.rules:
+            style = COLOR_GREEN if rule.negate else COLOR_TEXT
+            text.append(f"    {rule.label}\n", style=style)
+
+        text.append("\n  Config files: ", style=f"bold {COLOR_AMBER}")
+        text.append(", ".join(config.found) or "none (add .gvt.toml or ~/.config/gvt/config.toml)", style=COLOR_TEXT)
+        text.append("\n  Ignored commits: ", style=f"bold {COLOR_AMBER}")
+        text.append(f"{len(self.exclusions.ignore_revs)} from {config.ignore_revs or '(disabled)'}\n", style=COLOR_TEXT)
+        if config.warnings:
+            text.append("\n  Warnings\n", style=f"bold {COLOR_RED}")
+            for warning in config.warnings:
+                text.append(f"    {warning}\n", style=COLOR_TEXT)
+        text.append("\n  x toggles authored/everything  ·  gvt --show-rules prints these rules", style=COLOR_DIM)
+
+        with Container(id="exclusion-rules-container"):
             yield Static(text)
 
     def action_dismiss_modal(self) -> None:

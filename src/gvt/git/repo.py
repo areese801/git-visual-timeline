@@ -6,7 +6,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from git import Repo
@@ -29,6 +29,8 @@ class CommitInfo:
     deletions: int
     is_wip: bool = False
     refs: str = ""  # branch/tag names associated with this commit
+    # (path, additions, deletions) per file; filled by get_scope_commits
+    files: list[tuple[str, int, int]] = field(default_factory=list)
 
     @property
     def short_hash(self) -> str:
@@ -66,7 +68,10 @@ class TagInfo:
     date: datetime
 
 
-# Log format shared by the shortstat-based log readers
+# Rename syntax in --numstat paths: "dir/{old => new}/f" or "old => new"
+RENAME_BRACES = re.compile(r"\{([^{}]*) => ([^{}]*)\}")
+
+# Log format shared by the shortstat/numstat log readers
 LOG_FORMAT = "--format=---GVT_START---%n%H%n%at%n%an%n%s"
 
 # Max number of scoped logs kept in memory
@@ -195,8 +200,9 @@ class GitRepo:
         """
         Get all non-merge commits touching a file or directory, newest-first.
 
-        Line counts are limited to the scope by the pathspec, so a directory's
-        additions/deletions only count its own files. Results are cached per
+        Each commit carries per-file line counts (CommitInfo.files), limited to
+        the scope by the pathspec, so a directory's additions/deletions only
+        count its own files. Binary files count as 0 lines. Results are cached per
         (scope, HEAD) so a new commit invalidates them.
 
         :param path: File or directory path, relative or absolute. "" or "." means
@@ -217,7 +223,7 @@ class GitRepo:
                 self._scope_cache.move_to_end(key)
                 return cached
 
-        output = self.repo.git.log("--no-merges", LOG_FORMAT, "--shortstat", "--", scope)
+        output = self.repo.git.log("--no-merges", LOG_FORMAT, "--numstat", "--", scope)
         commits = self._parse_log(output, self._build_ref_map())
 
         with self._scope_cache_lock:
@@ -270,9 +276,23 @@ class GitRepo:
         return rel if rel and rel != "." else "."
 
     @staticmethod
+    def _numstat_path(path: str) -> str:
+        """
+        Resolve a --numstat path to the file's new name when it was renamed.
+        """
+        if "{" in path and " => " in path:
+            path = RENAME_BRACES.sub(lambda m: m.group(2), path)
+            return re.sub(r"/{2,}", "/", path).strip("/")
+        if " => " in path:
+            return path.split(" => ", 1)[1]
+        return path
+
+    @staticmethod
     def _parse_log(output: str, ref_map: dict[str, list[str]]) -> list[CommitInfo]:
         """
-        Parse `git log` output written with LOG_FORMAT and --shortstat.
+        Parse `git log` output written with LOG_FORMAT and --shortstat or --numstat.
+
+        With --numstat, totals are the sum of the per-file counts.
 
         :param output: Raw git log output.
         :param ref_map: sha -> ref names, used to fill CommitInfo.refs.
@@ -303,17 +323,27 @@ class GitRepo:
             author = lines[2].strip()
             subject = lines[3].strip()
 
-            # Parse shortstat line (e.g. " 3 files changed, 10 insertions(+), 5 deletions(-)")
+            # Parse numstat lines ("10\t5\tpath", "-\t-\tbinary") or the
+            # shortstat line (" 3 files changed, 10 insertions(+), 5 deletions(-)")
             total_adds = 0
             total_dels = 0
+            files: list[tuple[str, int, int]] = []
             for line in lines[4:]:
-                if "insertion" in line or "deletion" in line:
+                if "\t" in line:
+                    adds_str, dels_str, path = line.split("\t", 2)
+                    adds = int(adds_str) if adds_str.isdigit() else 0
+                    dels = int(dels_str) if dels_str.isdigit() else 0
+                    files.append((GitRepo._numstat_path(path.strip()), adds, dels))
+                elif "insertion" in line or "deletion" in line:
                     add_match = re.search(r"(\d+) insertion", line)
                     del_match = re.search(r"(\d+) deletion", line)
                     if add_match:
                         total_adds = int(add_match.group(1))
                     if del_match:
                         total_dels = int(del_match.group(1))
+            if files:
+                total_adds = sum(f[1] for f in files)
+                total_dels = sum(f[2] for f in files)
 
             commits.append(
                 CommitInfo(
@@ -324,6 +354,7 @@ class GitRepo:
                     additions=total_adds,
                     deletions=total_dels,
                     refs=" ".join(ref_map.get(hexsha, [])),
+                    files=files,
                 )
             )
         return commits
