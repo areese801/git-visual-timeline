@@ -73,7 +73,7 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 Press `v` to see how code grew over time. It covers whatever is highlighted in the file tree (a file, a directory, or `.` for the whole repo), or the file open in the timeline.
 
 - **Calendar** — a year of days shaded by commit count, like a GitHub contribution graph. `[` / `]` page back and forward a year.
-- **Frequency** — lines added (up) and deleted (down) per week, switching to months or years for long histories.
+- **Frequency** — lines added (up) and deleted (down) per week, switching to months or years for long histories. Press `m` for **volume** mode: the code's size over time above churn bars (lines added + deleted), like price and volume on a stock chart. The status line shows how much of the code changed in that period.
 - **Release tags** marked on both time axes.
 - **Jump to history** — press `Enter` on a day or week to list its commits, then open one in the timeline.
 
@@ -145,6 +145,7 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 | `j`/`k` | Move a day (calendar) |
 | `[` / `]` | Page back/forward a year (calendar) |
 | `0`/`$` | First/last period (frequency) |
+| `m` | Toggle volume mode (frequency) |
 | `Enter` | List commits, then open one in the timeline |
 | `Esc` | Back |
 

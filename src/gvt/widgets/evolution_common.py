@@ -67,14 +67,20 @@ class EvolutionView(Widget, can_focus=True):
         self.tz = tz
         self.commits: list[CommitInfo] = []
         self.tags: list[TagInfo] = []
+        # Lines in scope before the oldest commit shown (non-zero when filtered)
+        self.base_size = 0
         self.message: str = "Loading history…"
 
-    def set_data(self, commits: list[CommitInfo], tags: list[TagInfo]) -> None:
+    def set_data(self, commits: list[CommitInfo], tags: list[TagInfo], base_size: int = 0) -> None:
         """
         Show these commits (any order) and tags; clears any message.
+
+        :param base_size: Net lines added by commits older than these (the
+            scope's size where the shown history starts).
         """
         self.commits = commits
         self.tags = tags
+        self.base_size = base_size
         self.message = ""
         self.on_data_changed()
         self.refresh()

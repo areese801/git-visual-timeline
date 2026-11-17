@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from gvt.evolution import (
     UP_BLOCKS,
+    PeriodStats,
     axis_labels,
     bar_cells,
     bin_periods,
@@ -21,7 +22,11 @@ from gvt.evolution import (
     periods_before,
     place_labels,
     quantile_levels,
+    relative_churn,
+    running_sizes,
+    size_axis,
     tags_between,
+    volume_cells,
     week_start,
 )
 from gvt.git.repo import CommitInfo, TagInfo
@@ -250,3 +255,41 @@ class TestLabels:
         assert tags_between(tags, date(2026, 1, 1), date(2026, 2, 1), UTC) == ["v1"]
         assert tags_between(tags, date(2026, 1, 1), date(2026, 3, 1), UTC) == ["v1", "v2"]
         assert tags_between(tags, date(2026, 3, 1), date(2026, 4, 1), UTC) == []
+
+
+class TestVolume:
+    def test_running_sizes_accumulate_net_lines(self):
+        periods = [
+            PeriodStats(start=date(2026, 1, 5), additions=100, deletions=0),
+            PeriodStats(start=date(2026, 1, 12)),
+            PeriodStats(start=date(2026, 1, 19), additions=10, deletions=40),
+        ]
+        assert running_sizes(periods) == [100, 100, 70]
+        assert running_sizes(periods, base=1000) == [1100, 1100, 1070]
+
+    def test_size_axis_starts_at_zero_for_young_code(self):
+        assert size_axis([0, 0, 302]) == (0, 302)
+
+    def test_size_axis_zooms_in_on_mature_code(self):
+        assert size_axis([9000, 9500, 10500]) == (8625, 10500)
+
+    def test_size_axis_flat(self):
+        assert size_axis([500, 500]) == (450, 500)
+        assert size_axis([0, 0]) == (0, 1)
+
+    def test_volume_cells_stack_adds_under_dels(self):
+        assert volume_cells(8, 8, 16, 2) == [("█", "add"), ("█", "del")]
+
+    def test_volume_cells_split_inside_one_cell(self):
+        assert volume_cells(4, 4, 16, 2) == [("▄", "add_on_del"), (" ", "")]
+
+    def test_volume_cells_clipped(self):
+        assert volume_cells(100, 0, 10, 2) == [("█", "add"), ("█", "clip")]
+
+    def test_volume_cells_empty(self):
+        assert volume_cells(0, 0, 10, 2) == [(" ", ""), (" ", "")]
+
+    def test_relative_churn(self):
+        assert relative_churn(50, 1000, 1000) == 0.05
+        assert relative_churn(323, 0, 302) == 323 / 302
+        assert relative_churn(10, 0, 0) is None

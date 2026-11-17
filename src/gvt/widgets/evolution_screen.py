@@ -32,14 +32,37 @@ VIEWS = {
     "frequency": "frequency-view",
 }
 
-LEGEND = [
-    ("Tab", "views"),
-    ("h/j/k/l", "move"),
-    ("[ ]", "year"),
-    ("Enter", "commits"),
-    ("?", "help"),
-    ("Esc", "back"),
-]
+# Shortcut legend per view, kept within 80 columns
+LEGENDS = {
+    "calendar": [
+        ("Tab", "views"),
+        ("h/j/k/l", "move"),
+        ("[ ]", "year"),
+        ("Enter", "commits"),
+        ("?", "help"),
+        ("Esc", "back"),
+    ],
+    "frequency": [
+        ("Tab", "views"),
+        ("h/l", "move"),
+        ("0/$", "ends"),
+        ("m", "volume"),
+        ("Enter", "commits"),
+        ("?", "help"),
+        ("Esc", "back"),
+    ],
+}
+
+
+def legend_text(pane_id: str) -> Text:
+    """
+    Styled shortcut legend for one view.
+    """
+    text = Text()
+    for key, desc in LEGENDS[pane_id]:
+        text.append(f" {key} ", style="bold #c0caf5 on #3b4261")
+        text.append(f" {desc} ", style="#565f89")
+    return text
 
 
 def summarize(commits: list[CommitInfo], tz: tzinfo | None = None) -> Text:
@@ -159,11 +182,7 @@ class EvolutionScreen(Screen):
                     yield CalendarView(tz=self.tz, id="calendar-view")
                 with TabPane("2 Frequency", id="frequency"):
                     yield FrequencyView(tz=self.tz, id="frequency-view")
-        legend = Text()
-        for key, desc in LEGEND:
-            legend.append(f" {key} ", style="bold #c0caf5 on #3b4261")
-            legend.append(f" {desc} ", style="#565f89")
-        yield Static(legend, id="evolution-legend")
+        yield Static(legend_text("calendar"), id="evolution-legend")
 
     def on_mount(self) -> None:
         title = f"Evolution — {self.scope_label}"
@@ -187,10 +206,12 @@ class EvolutionScreen(Screen):
             self.app.call_from_thread(self._show_message, "Couldn't read history (see log)")
             return
 
+        base_size = 0
         cutoff = parse_time_filter(self.time_filter, datetime.now(tz=timezone.utc))
         if cutoff:
+            base_size = sum(c.additions - c.deletions for c in commits if c.date < cutoff)
             commits = [c for c in commits if c.date >= cutoff]
-        self.app.call_from_thread(self._apply_history, commits, tags)
+        self.app.call_from_thread(self._apply_history, commits, tags, base_size)
 
     def _views(self) -> list[EvolutionView]:
         return list(self.query(EvolutionView))
@@ -201,7 +222,7 @@ class EvolutionScreen(Screen):
         for view in self._views():
             view.set_message(message)
 
-    def _apply_history(self, commits: list[CommitInfo], tags: list[TagInfo]) -> None:
+    def _apply_history(self, commits: list[CommitInfo], tags: list[TagInfo], base_size: int) -> None:
         if not self.is_attached:
             return
         self.commits = commits
@@ -213,13 +234,14 @@ class EvolutionScreen(Screen):
             return
         self.query_one("#evolution-summary", Static).update(summarize(commits, self.tz))
         for view in self._views():
-            view.set_data(commits, tags)
+            view.set_data(commits, tags, base_size)
 
     # Tabs
 
     def _focus_active_view(self) -> None:
         active = self.query_one(TabbedContent).active or "calendar"
         self.query_one(f"#{VIEWS[active]}", EvolutionView).focus()
+        self.query_one("#evolution-legend", Static).update(legend_text(active))
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:

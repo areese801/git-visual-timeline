@@ -302,3 +302,44 @@ class TestCalendarSizing:
             await pilot.pause()
             first, last = view.window()
             assert first <= view.cursor_day <= last
+
+
+class TestFrequencyVolumeMode:
+    async def test_m_toggles_between_split_and_volume(self):
+        view = _frequency_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS, base_size=1000)
+            await pilot.pause()
+            assert view.mode == "split"
+            await pilot.press("m")
+            assert view.mode == "volume"
+            lines = view.render().plain.split("\n")
+            assert len(lines) == 16
+            assert lines[0].lstrip().startswith("1k")  # size axis top: 1,016
+            assert any("size" in line[:7] for line in lines)
+            assert any("churn" in line[:7] for line in lines)
+            assert "size 1,016" in view.status_text().plain
+            await pilot.press("m")
+            assert view.mode == "split"
+
+    async def test_status_shows_relative_churn(self):
+        view = _frequency_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS, base_size=1000)
+            await pilot.pause()
+            # Last week: +14 −6 = 20 lines touched on ~1,016 lines
+            assert "≈ 2% of size" in view.status_text().plain
+
+    async def test_volume_bars_render_stacked(self):
+        view = _frequency_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(120, 16)) as pilot:
+            view.set_data(RECENT, TAGS)
+            await pilot.press("m")
+            await pilot.pause()
+            assert view.mode == "volume"
+            chart = "\n".join(view.render().plain.split("\n")[:12])
+            assert "█" in chart
+            assert "━" in chart  # cursor on the baseline

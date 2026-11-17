@@ -678,6 +678,7 @@ class HelpModal(ModalScreen):
                 ("j/k/↑/↓", "Move a day (calendar)"),
                 ("[ / ]", "Page back/forward a year (calendar)"),
                 ("0/$", "First/last period (frequency)"),
+                ("m", "Volume mode: size over time + churn (frequency)"),
                 ("Enter", "List commits → open in timeline"),
                 ("Esc", "Back to panes"),
             ]),

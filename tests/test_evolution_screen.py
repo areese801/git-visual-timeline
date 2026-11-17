@@ -1,6 +1,9 @@
 """Integration tests for the Evolution screen inside the full app."""
 
+from datetime import datetime, timezone
+
 from gvt.app import GVTApp
+from gvt.git.repo import CommitInfo
 from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.evolution_screen import EvolutionScreen, in_scope, summarize
@@ -243,3 +246,42 @@ async def test_unexpected_load_error_shows_message_not_crash(fixture_repo, monke
         assert app.is_running
         assert isinstance(app.screen, EvolutionScreen)
         assert "Couldn't read history" in app.screen.query_one(CalendarView).render().plain
+
+
+class _StubRepo:
+    """Minimal GitRepo stand-in with fixed history."""
+
+    def __init__(self, commits):
+        self.commits = commits
+
+    def get_scope_commits(self, path):
+        return self.commits
+
+    def get_tags(self):
+        return []
+
+
+async def test_time_filter_passes_size_before_cutoff(fixture_repo):
+    old = CommitInfo("a" * 40, datetime(2020, 1, 1, tzinfo=timezone.utc), "T", "old", 100, 20)
+    new = CommitInfo("b" * 40, datetime.now(tz=timezone.utc), "T", "new", 5, 1)
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        app.push_screen(EvolutionScreen(_StubRepo([new, old]), ".", "whole repo", False, time_filter="1y"))
+        await _settle(app, pilot)
+        frequency = app.screen.query_one(FrequencyView)
+        assert frequency.commits == [new]
+        assert frequency.base_size == 80
+
+
+async def test_legend_follows_the_active_view(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        legend = screen.query_one("#evolution-legend")
+        assert "year" in str(legend.render())
+        await pilot.press("2")
+        await pilot.pause()
+        rendered = str(legend.render())
+        assert "volume" in rendered and "year" not in rendered

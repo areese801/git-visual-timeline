@@ -263,6 +263,75 @@ def bar_cells(value: int, cap: int, height: int) -> tuple[int, int, bool]:
     return eighths // 8, eighths % 8, False
 
 
+def running_sizes(periods: Iterable[PeriodStats], base: int = 0) -> list[int]:
+    """
+    Line count at the end of each period: `base` plus running adds − dels.
+    """
+    sizes = []
+    size = base
+    for p in periods:
+        size += p.additions - p.deletions
+        sizes.append(size)
+    return sizes
+
+
+def size_axis(sizes: list[int]) -> tuple[int, int]:
+    """
+    Vertical range (lo, hi) for the size area.
+
+    Young code starts the axis at zero; mature code zooms in on the range it
+    moved through (padded below) so small changes on a large codebase show.
+    """
+    lo, hi = min(sizes), max(sizes)
+    if hi == lo:
+        return (lo, lo + 1) if lo <= 0 else (lo - max(1, lo // 10), hi)
+    if 0 <= lo <= hi - lo:
+        return 0, hi
+    return lo - (hi - lo) // 4, hi
+
+
+def volume_cells(additions: int, deletions: int, cap: int, rows: int) -> list[tuple[str, str]]:
+    """
+    Cells of a stacked volume bar, bottom-up: additions below deletions.
+
+    :returns: (glyph, kind) per row, where kind is "add", "del", "add_on_del"
+        (additions glyph over a deletions background), "clip" for the tip of a
+        bar above the cap, or "" when empty. A cell partly filled with both
+        colors takes the dominant one.
+    """
+    total = additions + deletions
+    full, rem, clipped = bar_cells(total, cap, rows)
+    eighths = rows * 8 if clipped else full * 8 + rem
+    green = round(eighths * additions / total) if total else 0
+
+    cells = []
+    for k in range(rows):
+        filled = max(0, min(8, eighths - k * 8))
+        adds = max(0, min(8, green - k * 8))
+        if filled == 0:
+            cells.append((" ", ""))
+        elif adds >= filled:
+            cells.append((UP_BLOCKS[filled], "add"))
+        elif adds == 0:
+            cells.append((UP_BLOCKS[filled], "del"))
+        elif filled == 8:
+            cells.append((UP_BLOCKS[adds], "add_on_del"))
+        else:
+            cells.append((UP_BLOCKS[filled], "add" if adds * 2 >= filled else "del"))
+    if clipped and rows:
+        cells[-1] = ("█", "clip")
+    return cells
+
+
+def relative_churn(volume: int, size_before: int, size_after: int) -> float | None:
+    """
+    Volume as a fraction of the code's size around the period, or None when
+    there was no code to compare against.
+    """
+    base = max(size_before, size_after)
+    return volume / base if base > 0 else None
+
+
 def place_labels(positions: Iterable[tuple[int, str]], width: int, marker: str = "") -> str:
     """
     Lay out labels on a single row.
