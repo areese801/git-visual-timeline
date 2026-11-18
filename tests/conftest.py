@@ -7,15 +7,18 @@ import time
 import pytest
 from git import Repo
 
+from gvt.app import GVTApp
 from gvt.git.repo import GitRepo
 
 
 @pytest.fixture(autouse=True)
 def isolated_user_config(tmp_path, monkeypatch):
     """
-    Keep the developer's ~/.config/gvt/config.toml out of every test.
+    Keep tests away from the developer's ~/.config/gvt: no personal config is
+    read, and the "last file" marker is written to the test's temp dir.
     """
     monkeypatch.setenv("GVT_CONFIG", str(tmp_path / "no-user-config.toml"))
+    monkeypatch.setattr(GVTApp, "_last_file_path", lambda self: tmp_path / "gvt-last-file")
 
 
 @pytest.fixture
@@ -119,5 +122,4 @@ def git_repo(fixture_repo):
 @pytest.fixture
 def fixture_app(fixture_repo):
     """Return a GVTApp instance against the fixture repo."""
-    from gvt.app import GVTApp
     return GVTApp(repo_path=fixture_repo)
