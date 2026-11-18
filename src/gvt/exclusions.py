@@ -288,6 +288,13 @@ def load_config(repo_root: str, user_config: Path | None = USER_CONFIG) -> Exclu
     return config
 
 
+def _count(n: int, word: str) -> str:
+    """
+    "1 rule" / "3 rules".
+    """
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
 def _resolve(repo_root: str, path: str) -> Path:
     expanded = Path(os.path.expanduser(path))
     return expanded if expanded.is_absolute() else Path(repo_root) / expanded
@@ -302,8 +309,27 @@ class FilterResult:
     commits: list[CommitInfo]
     excluded_lines: int = 0
     dropped_commits: int = 0
+    # Lines added + deleted across all input commits
+    total_lines: int = 0
     # Rule label -> lines it removed
     by_rule: dict[str, int] = field(default_factory=dict)
+    # Rule label -> number of distinct files it matched
+    rule_files: dict[str, int] = field(default_factory=dict)
+    # Excluded path -> (lines removed, label of the rule that matched it)
+    by_file: dict[str, tuple[int, str]] = field(default_factory=dict)
+    # Kept path -> lines changed (for spotting noise the rules missed)
+    kept_by_file: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class LayerStatus:
+    """
+    How one rule layer was resolved for a repo, for the details view.
+    """
+
+    name: str
+    detail: str
+    active: bool
 
 
 class Exclusions:
@@ -311,10 +337,18 @@ class Exclusions:
     Compiled rules for one repo, with path matching and commit filtering.
     """
 
-    def __init__(self, rules: list[Rule], ignore_revs: set[str], config: ExclusionConfig) -> None:
+    def __init__(
+        self,
+        rules: list[Rule],
+        ignore_revs: set[str],
+        config: ExclusionConfig,
+        layers: list[LayerStatus] | None = None,
+    ) -> None:
         self.rules = rules
         self.ignore_revs = ignore_revs
         self.config = config
+        # How each layer contributed, in the order rules are applied
+        self.layers = layers or []
         self._verdicts: dict[str, Rule | None] = {}
 
     @classmethod
@@ -334,34 +368,66 @@ class Exclusions:
             if rule:
                 rules.append(rule)
 
+        layers: list[LayerStatus] = []
+
         for name in config.presets:
             for pattern in PRESETS[name]:
                 add(pattern, f"preset:{name}")
+        off = [name for name in PRESETS if name not in config.presets]
+        layers.append(
+            LayerStatus(
+                "Built-in presets",
+                f"on: {', '.join(config.presets) or 'none'}"
+                + (f"  ·  off: {', '.join(off)}" if off else ""),
+                bool(config.presets),
+            )
+        )
 
         attributes = Path(repo_root) / ".gitattributes"
-        if config.use_gitattributes and attributes.is_file():
+        if not config.use_gitattributes:
+            layers.append(LayerStatus(".gitattributes", "turned off (use_gitattributes = false)", False))
+        elif attributes.is_file():
             try:
-                rules += gitattributes_rules(attributes.read_text())
+                found = gitattributes_rules(attributes.read_text())
+                rules += found
+                layers.append(LayerStatus(".gitattributes", _count(len(found), "linguist rule"), bool(found)))
             except (OSError, UnicodeDecodeError) as e:
                 config.warnings.append(f"couldn't read .gitattributes: {e}")
+                layers.append(LayerStatus(".gitattributes", "couldn't be read", False))
+        else:
+            layers.append(LayerStatus(".gitattributes", "no file in this repo", False))
 
         for label in (config.user_label, REPO_CONFIG_NAME):
-            for pattern, source in config.exclude:
-                if source == label:
-                    add(pattern, source)
+            if not label:
+                continue
+            before = len(rules)
+            patterns = [pattern for pattern, source in config.exclude if source == label]
+            for pattern in patterns:
+                add(pattern, label)
+            if label in config.found:
+                detail = f"found  ·  {_count(len(rules) - before, 'exclude pattern')}"
+            else:
+                detail = "not found"
+            layers.append(LayerStatus(label, detail, label in config.found))
+
             for path, syntax, source in config.ignore_files:
                 if source != label:
                     continue
                 file = _resolve(repo_root, path)
+                name = f"{path} (listed in {label})"
                 if not file.is_file():
+                    layers.append(LayerStatus(name, "not found in this repo", False))
                     continue
                 try:
                     lines = file.read_text().splitlines()
                 except (OSError, UnicodeDecodeError) as e:
                     config.warnings.append(f"couldn't read {path}: {e}")
+                    layers.append(LayerStatus(name, "couldn't be read", False))
                     continue
+                before = len(rules)
                 for line in lines:
                     add(line, path, syntax)
+                layers.append(LayerStatus(name, _count(len(rules) - before, f"{syntax} pattern"), True))
 
         revs: set[str] = set()
         if config.ignore_revs:
@@ -371,7 +437,12 @@ class Exclusions:
                     sha = line.strip()
                     if re.fullmatch(r"[0-9a-f]{40}", sha):
                         revs.add(sha)
-        return cls(rules, revs, config)
+                layers.append(LayerStatus(config.ignore_revs, f"{_count(len(revs), 'commit')} to skip", bool(revs)))
+            else:
+                layers.append(LayerStatus(config.ignore_revs, "no file in this repo", False))
+        else:
+            layers.append(LayerStatus("ignore_revs", "turned off", False))
+        return cls(rules, revs, config, layers)
 
     def rule_for(self, path: str) -> Rule | None:
         """
@@ -398,8 +469,13 @@ class Exclusions:
         """
         result = FilterResult(commits=[])
         by_rule: Counter[str] = Counter()
+        rule_files: dict[str, set[str]] = {}
+        by_file: Counter[str] = Counter()
+        kept_by_file: Counter[str] = Counter()
+        file_rule: dict[str, str] = {}
         ignored = 0
         for commit in commits:
+            result.total_lines += commit.additions + commit.deletions
             if commit.hexsha in self.ignore_revs:
                 lines = commit.additions + commit.deletions
                 result.excluded_lines += lines
@@ -417,8 +493,12 @@ class Exclusions:
                 if rule is not None and not rule.negate:
                     result.excluded_lines += adds + dels
                     by_rule[rule.label] += adds + dels
+                    rule_files.setdefault(rule.label, set()).add(path)
+                    by_file[path] += adds + dels
+                    file_rule[path] = rule.label
                 else:
                     kept.append((path, adds, dels))
+                    kept_by_file[path] += adds + dels
 
             if len(kept) == len(commit.files):
                 result.commits.append(commit)
@@ -439,7 +519,21 @@ class Exclusions:
             noun = "commit" if ignored == 1 else "commits"
             by_rule[f"{self.config.ignore_revs}  {ignored} {noun}"] = lines
         result.by_rule = dict(by_rule)
+        result.rule_files = {label: len(paths) for label, paths in rule_files.items()}
+        result.by_file = {path: (lines, file_rule[path]) for path, lines in by_file.items()}
+        result.kept_by_file = dict(kept_by_file)
         return result
+
+    def suggest_preset(self, path: str) -> str | None:
+        """
+        Name of a preset that is turned off but would exclude `path`, if any.
+        """
+        for name, patterns in PRESETS.items():
+            if name in self.config.presets:
+                continue
+            if any(glob_to_regex(pattern).match(path) for pattern in patterns):
+                return name
+        return None
 
 
 def describe(exclusions: Exclusions) -> str:

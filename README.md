@@ -81,7 +81,7 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 
 #### Authored vs everything
 
-Lockfiles, generated snapshots, minified bundles and vendored code are committed on purpose but say little about how a project evolves. By default the Evolution views count only **authored** code; press `x` to include everything, or `X` to see which rules removed what. `gvt --show-rules` prints the rules for the current repo.
+Lockfiles, generated snapshots, minified bundles and vendored code are committed on purpose but say little about how a project evolves. By default the Evolution views count only **authored** code; press `x` to include everything. `X` opens the exclusion details: what was left out and by which rule, the largest files still counted (with a hint when a preset that's off would catch them), and how the rules were built from each layer. `gvt --show-rules` prints the rules for the current repo.
 
 Rules come from these layers, in order. The last matching rule wins, and a leading `!` brings a path back:
 
@@ -174,7 +174,7 @@ Commits that touch only excluded files (like a lockfile bump) don't count in aut
 | `0`/`$` | First/last period (frequency) |
 | `m` | Toggle volume mode (frequency) |
 | `x` | Toggle authored only / everything |
-| `X` | Show exclusion rules |
+| `X` | Exclusion details: what's left out and why |
 | `Enter` | List commits, then open one in the timeline |
 | `Esc` | Back |
 

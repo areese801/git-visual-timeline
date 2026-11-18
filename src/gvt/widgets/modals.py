@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual import on
 from textual.app import ComposeResult
-from textual.containers import Container, Vertical
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -681,7 +681,7 @@ class HelpModal(ModalScreen):
                 ("0/$", "First/last period (frequency)"),
                 ("m", "Volume mode: size over time + churn (frequency)"),
                 ("x", "Toggle authored only / everything"),
-                ("X", "Show exclusion rules"),
+                ("X", "Exclusion details: what's left out and why"),
                 ("Enter", "List commits → open in timeline"),
                 ("Esc", "Back to panes"),
             ]),
@@ -701,24 +701,26 @@ class HelpModal(ModalScreen):
         self.dismiss(None)
 
 
-class ExclusionRulesModal(ModalScreen):
+class ExclusionDetailsModal(ModalScreen):
     """
-    What authored mode leaves out: lines removed per rule, and every active rule.
+    What authored mode leaves out, why, and how the rules were put together.
     """
 
     DEFAULT_CSS = """
-    ExclusionRulesModal {
+    ExclusionDetailsModal {
         align: center middle;
         background: rgba(0, 0, 0, 0.7);
     }
 
-    #exclusion-rules-container {
-        width: 80%;
-        height: 80%;
+    #exclusion-details-container {
+        width: 85%;
+        height: 85%;
         background: #1a1b26;
         border: solid #7aa2f7;
+        border-title-color: #7aa2f7;
         padding: 1 2;
-        overflow-y: auto;
+        scrollbar-color: #3b4261;
+        scrollbar-background: #1a1b26;
     }
     """
 
@@ -726,52 +728,164 @@ class ExclusionRulesModal(ModalScreen):
         ("escape", "dismiss_modal", "Close"),
         ("q", "dismiss_modal", "Close"),
         ("X", "dismiss_modal", "Close"),
+        ("j", "scroll(1)", "Down"),
+        ("k", "scroll(-1)", "Up"),
     ]
 
-    # Rules listed in the "lines removed" table
-    TOP_RULES = 15
+    # Rows listed before "… N more"
+    TOP_RULES = 12
+    FILES_PER_RULE = 5
+    TOP_KEPT = 5
+    # Longest path shown in the file list (longer ones keep their tail)
+    PATH_WIDTH = 64
 
-    def __init__(self, exclusions: Exclusions, result: FilterResult, **kwargs) -> None:
+    def __init__(
+        self, exclusions: Exclusions, result: FilterResult, scope_label: str, mode: str, **kwargs
+    ) -> None:
+        """
+        :param exclusions: Rules and how their layers were resolved.
+        :param result: Outcome of applying the rules to the scope's commits.
+        :param scope_label: Human name for the scope.
+        :param mode: "authored" or "everything" (what the screen shows now).
+        """
         super().__init__(**kwargs)
         self.exclusions = exclusions
         self.result = result
+        self.scope_label = scope_label
+        self.mode = mode
 
-    def compose(self) -> ComposeResult:
+    def _heading(self, text: Text, title: str, note: str = "") -> None:
+        text.append(f"\n{title}", style=f"bold {COLOR_AMBER}")
+        if note:
+            text.append(f"  {note}", style=COLOR_DIM)
+        text.append("\n")
+
+    def build_text(self) -> Text:
+        """
+        The whole report as one Text (also used by tests).
+        """
+        result = self.result
         config = self.exclusions.config
         text = Text()
-        text.append("Exclusions", style=f"bold {COLOR_ACCENT}")
-        text.append("  authored mode leaves these out\n", style=COLOR_DIM)
-        text.append(f"  {self.result.excluded_lines:,} lines excluded", style=COLOR_TEXT)
-        text.append(f"  ·  {self.result.dropped_commits:,} commits dropped\n\n", style=COLOR_TEXT)
 
-        text.append("  Lines removed by rule\n", style=f"bold {COLOR_AMBER}")
-        ranked = sorted(self.result.by_rule.items(), key=lambda item: -item[1])
-        for label, lines in ranked[: self.TOP_RULES]:
-            text.append(f"    {lines:>10,}  ", style=COLOR_RED)
-            text.append(f"{label}\n", style=COLOR_TEXT)
-        if not ranked:
-            text.append("    (nothing in this scope matched)\n", style=COLOR_DIM)
-        elif len(ranked) > self.TOP_RULES:
-            text.append(f"    … {len(ranked) - self.TOP_RULES} more\n", style=COLOR_DIM)
+        if self.mode == "authored":
+            text.append("Mode: ", style=COLOR_DIM)
+            text.append("authored", style=f"bold {COLOR_PURPLE}")
+            text.append("  (press x to show everything)\n", style=COLOR_DIM)
+        else:
+            text.append("Mode: ", style=COLOR_DIM)
+            text.append("everything", style=f"bold {COLOR_PURPLE}")
+            text.append("  these exclusions are not applied now (press x to apply them)\n", style=COLOR_DIM)
 
-        text.append("\n  All rules", style=f"bold {COLOR_AMBER}")
-        text.append("  (last match wins, ! re-includes)\n", style=COLOR_DIM)
+        share = result.excluded_lines / result.total_lines if result.total_lines else 0
+        text.append(f"{result.excluded_lines:,}", style=f"bold {COLOR_RED}")
+        text.append(f" of {result.total_lines:,} changed lines ({share:.0%}) are in excluded files", style=COLOR_TEXT)
+        text.append(f" · {len(result.by_file):,} files", style=COLOR_TEXT)
+        if result.dropped_commits:
+            n = result.dropped_commits
+            verb = "commit touched only excluded files and is" if n == 1 else "commits touched only excluded files and are"
+            text.append(f"\n{n:,} {verb} left out of commit counts", style=COLOR_TEXT)
+        text.append("\n")
+
+        self._heading(text, 'What "authored" means')
+        text.append(
+            "Some files are committed on purpose but not written by hand: lockfiles, generated\n"
+            "snapshots, minified bundles, vendored code. Their churn hides how the code itself\n"
+            "evolves, so authored mode leaves them out of the calendar, frequency and volume\n"
+            "charts and the summary line. The commit list follows the mode; the file picker and\n"
+            "the main timeline always show every file.\n",
+            style=COLOR_TEXT,
+        )
+
+        files_by_rule: dict[str, list[tuple[str, int]]] = {}
+        for path, (lines, label) in result.by_file.items():
+            files_by_rule.setdefault(label, []).append((path, lines))
+
+        ranked_rules = sorted(result.by_rule.items(), key=lambda item: -item[1])
+        self._heading(text, "What was excluded", "by the rule that matched, largest first")
+        for label, lines in ranked_rules[: self.TOP_RULES]:
+            files = sorted(files_by_rule.get(label, []), key=lambda f: -f[1])
+            text.append(f"  {lines:>9,} lines  ", style=COLOR_RED)
+            if files:
+                text.append(f"{len(files):>4} {'file ' if len(files) == 1 else 'files'}  ", style=COLOR_DIM)
+            text.append(f"{label}\n", style=f"bold {COLOR_TEXT}")
+            for path, file_lines in files[: self.FILES_PER_RULE]:
+                shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
+                text.append(f"  {file_lines:>15,}  ", style=COLOR_DIM)
+                text.append(f"{shown}\n", style=COLOR_TEXT)
+            if len(files) > self.FILES_PER_RULE:
+                text.append(f"  {'':>15}  … {len(files) - self.FILES_PER_RULE:,} more files\n", style=COLOR_DIM)
+        if not ranked_rules:
+            text.append("  Nothing in this scope matched the rules.\n", style=COLOR_DIM)
+        elif len(ranked_rules) > self.TOP_RULES:
+            text.append(f"  … {len(ranked_rules) - self.TOP_RULES} more rules\n", style=COLOR_DIM)
+
+        kept = sorted(result.kept_by_file.items(), key=lambda item: -item[1])[: self.TOP_KEPT]
+        if kept:
+            self._heading(
+                text, "Largest files still counted", "noise the rules missed?  → a preset that's off would exclude it"
+            )
+            for path, lines in kept:
+                shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
+                text.append(f"  {lines:>9,} lines  ", style=COLOR_AMBER)
+                text.append(shown, style=COLOR_TEXT)
+                preset = self.exclusions.suggest_preset(path)
+                if preset:
+                    text.append(f"  → '{preset}' preset", style=COLOR_DIM)
+                text.append("\n")
+
+        self._heading(
+            text, "How the rules were built", "applied in this order; the last matching rule wins, ! re-includes"
+        )
+        width = max((len(layer.name) for layer in self.exclusions.layers), default=0)
+        for i, layer in enumerate(self.exclusions.layers, 1):
+            mark, style = ("✓", COLOR_GREEN) if layer.active else ("·", COLOR_DIM)
+            text.append(f"  {mark} {i}. ", style=style)
+            text.append(f"{layer.name:<{width}}  ", style=COLOR_TEXT if layer.active else COLOR_DIM)
+            text.append(f"{layer.detail}\n", style=COLOR_DIM)
+
+        self._heading(text, "Changing it")
+        text.append(
+            "Add rules to .gvt.toml in the repo (share it with your team) or to your own\n"
+            f"{config.user_label or '~/.config/gvt/config.toml'}, for example:\n",
+            style=COLOR_TEXT,
+        )
+        text.append(
+            "    [evolution]\n"
+            '    presets = ["lockfiles", "minified", "generated", "vendored", "data"]\n'
+            '    exclude = ["packages/core/src/data/**", "re:^docs/prototype/", "!docs/keep.md"]\n'
+            '    ignore_files = [{ path = ".clocignore", syntax = "regex" }]\n',
+            style=COLOR_ACCENT,
+        )
+        text.append("gvt --show-rules prints these rules from the shell; the README lists every option.\n", style=COLOR_DIM)
+
+        self._heading(text, f"All rules ({len(self.exclusions.rules)})")
         for rule in self.exclusions.rules:
-            style = COLOR_GREEN if rule.negate else COLOR_TEXT
-            text.append(f"    {rule.label}\n", style=style)
+            text.append(f"  {rule.label}\n", style=COLOR_GREEN if rule.negate else COLOR_DIM)
 
-        text.append("\n  Config files: ", style=f"bold {COLOR_AMBER}")
-        text.append(", ".join(config.found) or "none (add .gvt.toml or ~/.config/gvt/config.toml)", style=COLOR_TEXT)
-        text.append("\n  Ignored commits: ", style=f"bold {COLOR_AMBER}")
-        text.append(f"{len(self.exclusions.ignore_revs)} from {config.ignore_revs or '(disabled)'}\n", style=COLOR_TEXT)
         if config.warnings:
-            text.append("\n  Warnings\n", style=f"bold {COLOR_RED}")
+            self._heading(text, "Warnings")
             for warning in config.warnings:
-                text.append(f"    {warning}\n", style=COLOR_TEXT)
-        text.append("\n  x toggles authored/everything  ·  gvt --show-rules prints these rules", style=COLOR_DIM)
+                text.append(f"  {warning}\n", style=COLOR_RED)
 
-        with Container(id="exclusion-rules-container"):
-            yield Static(text)
+        text.append("\nj/k scroll  ·  Esc close", style=COLOR_DIM)
+        return text
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="exclusion-details-container"):
+            yield Static(self.build_text())
+
+    def on_mount(self) -> None:
+        container = self.query_one("#exclusion-details-container", VerticalScroll)
+        container.border_title = f"Exclusion details — {self.scope_label}"
+        container.focus()
+
+    def action_scroll(self, direction: int) -> None:
+        container = self.query_one("#exclusion-details-container", VerticalScroll)
+        if direction > 0:
+            container.scroll_down()
+        else:
+            container.scroll_up()
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)

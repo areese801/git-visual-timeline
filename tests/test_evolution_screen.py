@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timezone
 
 from git import Repo
-from textual.widgets import Static
 
 from gvt.app import GVTApp
 from gvt.git.repo import CommitInfo
@@ -12,7 +11,7 @@ from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.evolution_screen import EvolutionScreen, in_scope, summarize
 from gvt.widgets.frequency_view import FrequencyView
-from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionRulesModal
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionDetailsModal
 from gvt.widgets.timeline import TimelineWidget
 
 SIZE = (130, 40)
@@ -346,10 +345,20 @@ async def test_shift_x_lists_rules(fixture_repo):
         await _open_evolution(app, pilot)
         await pilot.press("X")
         await pilot.pause()
-        assert isinstance(app.screen, ExclusionRulesModal)
-        text = str(app.screen.query_one(Static).render())
-        assert "70 lines excluded" in text
-        assert "preset:lockfiles  pnpm-lock.yaml" in text
+        assert isinstance(app.screen, ExclusionDetailsModal)
+        text = app.screen.build_text().plain
+        assert "Mode: authored" in text
+        assert "70 of " in text and "are in excluded files" in text
+        assert "1 commit touched only excluded files and is left out" in text
+        assert "What was excluded" in text
+        assert "70 lines     1 file   preset:lockfiles  pnpm-lock.yaml" in text
+        assert "             70  pnpm-lock.yaml" in text  # the file, under its rule
+        assert "Largest files still counted" in text
+        assert "README.md  → 'docs' preset" in text
+        assert "How the rules were built" in text
+        assert "✓ 1. Built-in presets" in text
+        assert ".gvt.toml" in text and "not found" in text
+        assert "Changing it" in text
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(app.screen, EvolutionScreen)
@@ -365,3 +374,18 @@ async def test_repo_config_sets_default_mode(fixture_repo):
         screen = await _open_evolution(app, pilot)
         assert screen.mode == "everything"
         assert len(screen.commits) == 8
+
+
+
+def test_legend_fits_narrow_terminals_and_keeps_key_actions():
+    from gvt.widgets.evolution_screen import legend_text
+
+    wide = legend_text("frequency", 200).plain
+    assert " X " in wide and " 0/$ " in wide and " Tab " in wide
+    narrow = legend_text("frequency", 80).plain
+    assert len(narrow) <= 80
+    for key in (" x ", " X ", " m ", " Enter ", " Esc "):
+        assert key in narrow
+    assert " 0/$ " not in narrow
+    calendar = legend_text("calendar", 80).plain
+    assert len(calendar) <= 80 and " X " in calendar and " [ ] " in calendar

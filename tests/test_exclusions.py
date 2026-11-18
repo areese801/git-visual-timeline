@@ -268,3 +268,56 @@ def test_default_user_config_is_read(monkeypatch, tmp_path):
     exclusions = Exclusions.load(str(tmp_path / "repo"))
     assert exclusions.excludes("a.csv")
     assert any(r.source.endswith("custom.toml") for r in exclusions.rules)
+
+
+def test_apply_reports_files_rules_and_totals(tmp_path):
+    exclusions = Exclusions.load(str(tmp_path), user_config=None)
+    result = exclusions.apply([
+        _commit("a", [("src/app.py", 10, 2), ("pnpm-lock.yaml", 500, 400)]),
+        _commit("b", [("pnpm-lock.yaml", 30, 30), ("web/a.min.js", 7, 0)]),
+    ])
+    assert result.total_lines == 979
+    assert result.by_file == {
+        "pnpm-lock.yaml": (960, "preset:lockfiles  pnpm-lock.yaml"),
+        "web/a.min.js": (7, "preset:minified  *.min.js"),
+    }
+    assert result.rule_files == {
+        "preset:lockfiles  pnpm-lock.yaml": 1,
+        "preset:minified  *.min.js": 1,
+    }
+
+
+def test_layers_explain_how_rules_were_built(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitattributes").write_text("gen/** linguist-generated\n")
+    (repo / ".clocignore").write_text("^seed/\n^fixtures/\n")
+    (repo / ".gvt.toml").write_text(
+        '[evolution]\nexclude = ["*.csv"]\n'
+        'ignore_files = [{ path = ".clocignore", syntax = "regex" }, ".missingignore"]\n'
+    )
+    exclusions = Exclusions.load(str(repo), user_config=tmp_path / "absent.toml")
+    layers = {layer.name: (layer.detail, layer.active) for layer in exclusions.layers}
+
+    assert layers["Built-in presets"] == (
+        "on: lockfiles, minified, generated, vendored  ·  off: docs, data",
+        True,
+    )
+    assert layers[".gitattributes"] == ("1 linguist rule", True)
+    assert layers[str(tmp_path / "absent.toml")] == ("not found", False)
+    assert layers[".gvt.toml"] == ("found  ·  1 exclude pattern", True)
+    assert layers[".clocignore (listed in .gvt.toml)"] == ("2 regex patterns", True)
+    assert layers[".missingignore (listed in .gvt.toml)"] == ("not found in this repo", False)
+    assert layers[".git-blame-ignore-revs"] == ("no file in this repo", False)
+    assert [layer.name for layer in exclusions.layers][0] == "Built-in presets"
+
+
+def test_kept_files_and_preset_suggestions(tmp_path):
+    exclusions = Exclusions.load(str(tmp_path), user_config=None)
+    result = exclusions.apply([
+        _commit("a", [("src/app.py", 10, 2), ("data/domains.json", 14000, 0), ("README.md", 5, 1)]),
+    ])
+    assert result.kept_by_file == {"src/app.py": 12, "data/domains.json": 14000, "README.md": 6}
+    assert exclusions.suggest_preset("data/domains.json") == "data"
+    assert exclusions.suggest_preset("README.md") == "docs"
+    assert exclusions.suggest_preset("src/app.py") is None

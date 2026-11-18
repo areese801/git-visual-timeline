@@ -23,7 +23,7 @@ from gvt.logging_setup import get_logger
 from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.evolution_common import EvolutionView, PeriodChosen, plural
 from gvt.widgets.frequency_view import FrequencyView, compact
-from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionRulesModal
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionDetailsModal
 from gvt.widgets.timeline import parse_time_filter
 
 log = get_logger(__name__)
@@ -34,33 +34,45 @@ VIEWS = {
     "frequency": "frequency-view",
 }
 
-# Shortcut legend per view, kept within 80 columns
+# Shortcut legend per view: (key, description, priority). When the terminal is
+# too narrow, the entries with the highest priority number are dropped first.
 LEGENDS = {
     "calendar": [
-        ("Tab", "views"),
-        ("h/j/k/l", "move"),
-        ("[ ]", "year"),
-        ("x", "excludes"),
-        ("Enter", "list"),
-        ("Esc", "back"),
+        ("Tab", "views", 5),
+        ("h/j/k/l", "move", 3),
+        ("[ ]", "year", 4),
+        ("x", "authored/all", 1),
+        ("X", "details", 2),
+        ("Enter", "list", 2),
+        ("Esc", "back", 1),
     ],
     "frequency": [
-        ("Tab", "views"),
-        ("h/l", "move"),
-        ("m", "volume"),
-        ("x", "excludes"),
-        ("Enter", "list"),
-        ("Esc", "back"),
+        ("Tab", "views", 5),
+        ("h/l", "move", 3),
+        ("0/$", "ends", 6),
+        ("m", "volume", 2),
+        ("x", "authored/all", 1),
+        ("X", "details", 2),
+        ("Enter", "list", 2),
+        ("Esc", "back", 1),
     ],
 }
 
 
-def legend_text(pane_id: str) -> Text:
+def legend_text(pane_id: str, width: int = 1000) -> Text:
     """
-    Styled shortcut legend for one view.
+    Styled shortcut legend for one view, fitted to `width` columns.
     """
+    entries = list(LEGENDS[pane_id])
+
+    def length(items: list[tuple[str, str, int]]) -> int:
+        return sum(len(key) + len(desc) + 4 for key, desc, _ in items)
+
+    while entries and length(entries) > width:
+        entries.remove(max(entries, key=lambda e: e[2]))
+
     text = Text()
-    for key, desc in LEGENDS[pane_id]:
+    for key, desc, _ in entries:
         text.append(f" {key} ", style="bold #c0caf5 on #3b4261")
         text.append(f" {desc} ", style="#565f89")
     return text
@@ -315,14 +327,23 @@ class EvolutionScreen(Screen):
     def action_show_rules(self) -> None:
         if self._exclusions is None or self._filtered is None:
             return
-        self.app.push_screen(ExclusionRulesModal(self._exclusions, self._filtered))
+        self.app.push_screen(
+            ExclusionDetailsModal(self._exclusions, self._filtered, self.scope_label, self.mode)
+        )
 
     # Tabs
 
     def _focus_active_view(self) -> None:
         active = self.query_one(TabbedContent).active or "calendar"
         self.query_one(f"#{VIEWS[active]}", EvolutionView).focus()
-        self.query_one("#evolution-legend", Static).update(legend_text(active))
+        self._update_legend()
+
+    def _update_legend(self) -> None:
+        active = self.query_one(TabbedContent).active or "calendar"
+        self.query_one("#evolution-legend", Static).update(legend_text(active, self.size.width))
+
+    def on_resize(self) -> None:
+        self._update_legend()
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
