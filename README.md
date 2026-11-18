@@ -22,6 +22,9 @@ gvt
 
 # Jump directly to a file
 gvt path/to/file.py
+
+# Print the Evolution exclusion rules for the current repo
+gvt --show-rules
 ```
 
 ## Layout
@@ -91,14 +94,15 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 
 ### All Features
 
+- **Evolution** (`v`) — contribution calendar, code frequency and volume charts for a file, directory or the whole repo, counting only authored code by default
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
 - **Diff search** (`/`) — regex search within the diff with `n`/`p` to navigate matches
-- **Commit search** (`c`) — fuzzy search all repo commits by message, branch, or author
+- **Commit search** (`c`) — fuzzy search all repo commits by message, branch, or author, then open a file at that commit
 - **Time filter** (`t`) — filter timeline by date range (1w, 1m, 3m, 6m, 1y, custom date)
 - **Contributor breakdown** (`B`) — who changed the file and how much
 - **WIP indicator** — hollow tick showing uncommitted changes
 - **Copy to clipboard** (`y`/`Y`) — short or full commit hash
-- **Open in editor** (`e`) — open current file in `$VISUAL`/`$EDITOR`/vim
+- **Open in editor** (`e`) — open current file in `$VISUAL`/`$EDITOR`/vim (arguments like `code --wait` work)
 - **Remember last file** — reopens to the last file you were viewing per repo
 - **tmux integration** — seamless pane switching at edges
 - **Preloaded diffs** — adjacent commits pre-cached for instant navigation
