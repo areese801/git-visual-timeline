@@ -783,7 +783,8 @@ class ExclusionDetailsModal(ModalScreen):
         share = result.excluded_lines / result.total_lines if result.total_lines else 0
         text.append(f"{result.excluded_lines:,}", style=f"bold {COLOR_RED}")
         text.append(f" of {result.total_lines:,} changed lines ({share:.0%}) are in excluded files", style=COLOR_TEXT)
-        text.append(f" · {len(result.by_file):,} files", style=COLOR_TEXT)
+        n_files = len(result.by_file)
+        text.append(f" · {n_files:,} {'file' if n_files == 1 else 'files'}", style=COLOR_TEXT)
         if result.dropped_commits:
             n = result.dropped_commits
             verb = "commit touched only excluded files and is" if n == 1 else "commits touched only excluded files and are"

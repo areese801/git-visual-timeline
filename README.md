@@ -75,6 +75,8 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 
 Press `v` to see how code grew over time. It covers whatever is highlighted in the file tree (a file, a directory, or `.` for the whole repo), or the file open in the timeline.
 
+![Evolution](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-evolution.gif)
+
 - **Calendar** — a year of days shaded by commit count, like a GitHub contribution graph. `[` / `]` page back and forward a year.
 - **Frequency** — lines added (up) and deleted (down) across the project's whole history, from the repo's first commit to today, in daily bars when they fit and weekly, monthly or yearly bars otherwise. Press `m` for **volume** mode: the code's size over time above churn bars (lines added + deleted), like price and volume on a stock chart. The status line shows how much of the code changed in that period.
 - **Release tags** marked on both time axes.
