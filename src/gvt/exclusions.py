@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from gvt.git.repo import CommitInfo
+from gvt.textsafe import safe_text
 
 try:
     import tomllib
@@ -149,7 +150,8 @@ class Rule:
         text = self.text or self.pattern
         if self.negate and not text.startswith("!"):
             text = "!" + text
-        return f"{self.source}  {text}"
+        # Patterns come from files in the repo; never print them raw
+        return safe_text(f"{self.source}  {text}")
 
 
 def parse_pattern(text: str, source: str, syntax: str = "glob") -> Rule | None:
@@ -554,5 +556,5 @@ def describe(exclusions: Exclusions) -> str:
     ]
     lines += [f"  {rule.label}" for rule in exclusions.rules] or ["  (none)"]
     if config.warnings:
-        lines += ["", "warnings:"] + [f"  {w}" for w in config.warnings]
+        lines += ["", "warnings:"] + [f"  {safe_text(w)}" for w in config.warnings]
     return "\n".join(lines)

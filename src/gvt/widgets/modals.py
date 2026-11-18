@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.markup import escape
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -14,6 +15,7 @@ from rich.text import Text
 
 from gvt.exclusions import Exclusions, FilterResult
 from gvt.git.repo import CommitInfo
+from gvt.textsafe import safe_text
 
 try:
     from thefuzz import fuzz
@@ -98,7 +100,8 @@ class CommitSearchModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="commit-search-container"):
-            yield Label(self.title_text, id="commit-search-title")
+            # Text, not str: the title can include repo paths, which aren't markup
+            yield Label(Text(self.title_text), id="commit-search-title")
             yield Input(placeholder="Search commit messages...", id="commit-search-input")
             yield Vertical(id="commit-search-results")
 
@@ -837,12 +840,13 @@ class ExclusionDetailsModal(ModalScreen):
         self._heading(
             text, "How the rules were built", "applied in this order; the last matching rule wins, ! re-includes"
         )
-        width = max((len(layer.name) for layer in self.exclusions.layers), default=0)
-        for i, layer in enumerate(self.exclusions.layers, 1):
-            mark, style = ("✓", COLOR_GREEN) if layer.active else ("·", COLOR_DIM)
+        layers = [(safe_text(layer.name), safe_text(layer.detail), layer.active) for layer in self.exclusions.layers]
+        width = max((len(name) for name, _, _ in layers), default=0)
+        for i, (name, detail, active) in enumerate(layers, 1):
+            mark, style = ("✓", COLOR_GREEN) if active else ("·", COLOR_DIM)
             text.append(f"  {mark} {i}. ", style=style)
-            text.append(f"{layer.name:<{width}}  ", style=COLOR_TEXT if layer.active else COLOR_DIM)
-            text.append(f"{layer.detail}\n", style=COLOR_DIM)
+            text.append(f"{name:<{width}}  ", style=COLOR_TEXT if active else COLOR_DIM)
+            text.append(f"{detail}\n", style=COLOR_DIM)
 
         self._heading(text, "Changing it")
         text.append(
@@ -866,7 +870,7 @@ class ExclusionDetailsModal(ModalScreen):
         if config.warnings:
             self._heading(text, "Warnings")
             for warning in config.warnings:
-                text.append(f"  {warning}\n", style=COLOR_RED)
+                text.append(f"  {safe_text(warning)}\n", style=COLOR_RED)
 
         text.append("\nj/k scroll  ·  Esc close", style=COLOR_DIM)
         return text
@@ -877,7 +881,7 @@ class ExclusionDetailsModal(ModalScreen):
 
     def on_mount(self) -> None:
         container = self.query_one("#exclusion-details-container", VerticalScroll)
-        container.border_title = f"Exclusion details — {self.scope_label}"
+        container.border_title = f"Exclusion details — {escape(self.scope_label)}"
         container.focus()
 
     def action_scroll(self, direction: int) -> None:

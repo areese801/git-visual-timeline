@@ -123,3 +123,33 @@ def test_open_in_editor_no_current_file(fixture_app, monkeypatch):
 
     assert not runs
     assert not called
+
+
+def test_open_in_editor_splits_editor_arguments(fixture_app, monkeypatch):
+    """EDITOR="code --wait" runs `code --wait <file>`, not a program named "code --wait"."""
+    import contextlib
+
+    fixture_app.current_file = "hello.py"
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "code --wait")
+    monkeypatch.setattr(fixture_app, "suspend", lambda: contextlib.nullcontext())
+    runs = []
+    monkeypatch.setattr(
+        "gvt.app.subprocess.run", lambda cmd, **k: runs.append(cmd) or subprocess.CompletedProcess(cmd, 0)
+    )
+    fixture_app.action_open_in_editor()
+    assert runs and runs[0][:2] == ["code", "--wait"]
+    assert runs[0][2].endswith("hello.py")
+
+
+def test_tmux_missing_from_path_is_ignored(monkeypatch):
+    """With $TMUX set but no tmux binary, pane handoff does nothing instead of crashing."""
+    from gvt.app import GVTApp
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
+
+    def missing(*a, **k):
+        raise FileNotFoundError("tmux")
+
+    monkeypatch.setattr("gvt.app.subprocess.run", missing)
+    GVTApp._tmux_select_pane("L")

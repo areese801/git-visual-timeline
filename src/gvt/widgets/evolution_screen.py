@@ -13,6 +13,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Container
+from textual.markup import escape
 from textual.screen import Screen
 from textual.widgets import Static, TabbedContent, TabPane, Tabs
 
@@ -20,6 +21,7 @@ from gvt.evolution import bucket_by_day, local_day
 from gvt.exclusions import USER_CONFIG, Exclusions, FilterResult
 from gvt.git.repo import CommitInfo, GitRepo, TagInfo
 from gvt.logging_setup import get_logger
+from gvt.textsafe import safe_text
 from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.evolution_common import EvolutionView, PeriodChosen, plural
 from gvt.widgets.frequency_view import FrequencyView, compact
@@ -211,7 +213,7 @@ class EvolutionScreen(Screen):
         yield Static(legend_text("calendar"), id="evolution-legend")
 
     def on_mount(self) -> None:
-        title = f"Evolution — {self.scope_label}"
+        title = f"Evolution — {escape(self.scope_label)}"
         if self.time_filter:
             title += f" (since {self.time_filter})"
         self.query_one("#evolution-container", Container).border_title = title
@@ -262,7 +264,9 @@ class EvolutionScreen(Screen):
         self._filtered = filtered
         self.mode = exclusions.config.default_mode
         for warning in exclusions.config.warnings:
-            self.notify(warning, title="Exclusion rules", severity="warning", timeout=6)
+            self.notify(
+                safe_text(warning), title="Exclusion rules", severity="warning", timeout=6, markup=False
+            )
         self._show()
 
     def _mode_text(self) -> Text:
@@ -367,7 +371,7 @@ class EvolutionScreen(Screen):
     def _on_period_chosen(self, event: PeriodChosen) -> None:
         period = [c for c in self.commits if event.start <= local_day(c.date, self.tz) < event.end]
         if not period:
-            self.notify(f"No commits in {event.label}", timeout=2)
+            self.notify(f"No commits in {event.label}", timeout=2, markup=False)
             return
         title = f"Commits in {event.label} — {self.scope_label} (type to filter, Enter to select)"
         self.app.push_screen(
