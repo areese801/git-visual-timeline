@@ -1,6 +1,7 @@
 """Tests for evolution exclusion rules: patterns, presets, config layers, filtering."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -321,3 +322,16 @@ def test_kept_files_and_preset_suggestions(tmp_path):
     assert exclusions.suggest_preset("data/domains.json") == "data"
     assert exclusions.suggest_preset("README.md") == "docs"
     assert exclusions.suggest_preset("src/app.py") is None
+
+
+def test_readme_lists_every_preset_pattern():
+    """
+    The README's presets table must stay in sync with PRESETS.
+    """
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    for name, patterns in PRESETS.items():
+        row = next((line for line in readme.splitlines() if line.startswith(f"| `{name}` |")), None)
+        assert row, f"preset {name} missing from the README presets table"
+        for pattern in patterns:
+            assert f"`{pattern}`" in row, f"{pattern} ({name}) missing from the README"
+        assert ("| yes |" in row) == (name in DEFAULT_PRESETS)

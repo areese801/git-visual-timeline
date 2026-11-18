@@ -61,7 +61,9 @@ make help           # Show all targets
 | `src/gvt/git/repo.py` | GitRepo wrapper — commits, diffs, blame, file listing |
 | `src/gvt/git/cache.py` | LRU diff cache (~100 entries) |
 | `src/gvt/evolution.py` | Pure binning/layout math for the Evolution views (no git, no Textual) |
-| `src/gvt/widgets/evolution_screen.py` | Evolution screen (`v`): tabs, data loading, jump into history |
+| `src/gvt/exclusions.py` | Evolution exclusion rules: presets, `.gitattributes`, config files, filtering |
+| `src/gvt/widgets/evolution_screen.py` | Evolution screen (`v`): tabs, data loading, authored/everything, jump into history |
+| `src/gvt/widgets/calendar_view.py` / `frequency_view.py` | The two Evolution views; `evolution_common.py` holds their base class and `PeriodChosen` |
 | `src/gvt/widgets/` | All TUI widgets (timeline, diff_view, file_tree, modals, calendar_view, frequency_view, etc.) |
 | `src/gvt/styles/app.tcss` | Textual CSS — Tokyo Night color scheme |
 
@@ -71,6 +73,87 @@ make help           # Show all targets
 - **LRU cache**: Diffs are cached by `(file, commit_a, commit_b)` to avoid recomputation when navigating back and forth.
 - **Message-based communication**: Widgets post messages (e.g. `CursorMoved`, `FileSelected`) that the app handles to coordinate updates across panes.
 - **Direct git CLI calls**: Use `self.repo.git.diff(...)` / `self.repo.git.show(...)` instead of gitpython's tree traversal, which crashes on large repos.
+
+## Evolution Screen
+
+`v` opens a full-screen view of how a file, directory or the whole repo changed
+over time: a contribution calendar and a frequency chart (split adds/deletes, or
+`m` volume mode: size over time above churn). User-facing behavior and the config
+reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
+
+### Data flow
+
+1. `GVTApp._resolve_evolution_scope()` picks the scope: the highlighted file-tree
+   node when the tree has focus, otherwise the file in the timeline, otherwise the
+   whole repo (`"."`). Untracked nodes fall back to the whole repo.
+2. `EvolutionScreen._load_history` (a `@work` thread) calls
+   `GitRepo.get_scope_commits(scope)`, which runs one
+   `git log --no-merges --numstat -- <scope>`. It returns newest-first `CommitInfo`
+   objects whose `files` hold per-file `(path, adds, dels)`, with renames resolved
+   to the new path and binary files as 0. Results are LRU-cached by `(scope, HEAD)`.
+   The worker also loads tags, the repo's first commit date, and
+   `Exclusions.load(repo_root)`, then runs `exclusions.apply(commits)`.
+3. `EvolutionScreen._show()` picks the commits for the mode (authored or
+   everything), applies the `t` time filter (`base_size` = net lines before the
+   cutoff, so volume mode's size starts at the right height), sets
+   `FrequencyView.history_start`, and hands the commits to both views.
+4. The views compute everything through pure functions in `gvt/evolution.py`.
+   They never call git.
+5. `Enter` posts `PeriodChosen` → `CommitSearchModal` with that period's commits →
+   `CommitFilesModal` (skipped for a file scope) → the screen dismisses with
+   `(path, sha)` → `GVTApp._load_file(path, focus_sha=sha)` opens the timeline on
+   that commit.
+
+### Rules to keep
+
+- Binning, scaling and label layout belong in `gvt/evolution.py`, pure and
+  unit-tested; the widgets only render.
+- Exclusions are applied in memory to per-file stats, never as git pathspecs, so
+  `x` toggles instantly and regex rules work.
+- Exclusions affect only the Evolution screen. The timeline, diffs, blame, commit
+  search and the file picker always show everything.
+- While an `EvolutionScreen` is on the stack, `GVTApp.check_action` disables every
+  app binding except those in `_EVOLUTION_ALLOWED_ACTIONS` (quit, help). New app
+  bindings are blocked there automatically; add them to that set only if they make
+  sense over the Evolution screen.
+- The legend (`LEGENDS` in `evolution_screen.py`) drops entries with the highest
+  priority number first on narrow terminals. Keep `x`, `X`, `Enter` and `Esc` at
+  priority 1–2.
+- The frequency axis spans `history_start` (repo's first commit or the
+  time-filter cutoff) to today, at the finest granularity that fits (day, week,
+  month, year), with at least `MIN_PERIODS` periods.
+
+### Exclusion rules (`gvt/exclusions.py`)
+
+- Layers, applied in order, last match wins, `!` re-includes: built-in `PRESETS`
+  (`DEFAULT_PRESETS` on), `.gitattributes` linguist attributes, the user config
+  (`user_config_path()`: `$GVT_CONFIG` or `~/.config/gvt/config.toml`), then the
+  repo's `.gvt.toml`. Within config files, scalars (`default_mode`, `presets`,
+  `use_gitattributes`, `ignore_revs`) are replaced by the later file and lists
+  (`exclude`, `ignore_files`) are appended.
+- Patterns are gitignore-style globs (`glob_to_regex`); `re:` marks a regex;
+  `ignore_files` entries can set `syntax = "regex"` for a whole file.
+- `Exclusions.apply()` returns a `FilterResult`: kept commits (new objects;
+  inputs are never mutated), excluded line totals, lines and file counts per rule,
+  per-file details, and the largest kept files. `Exclusions.layers` records how
+  each layer resolved; the `X` details modal (`ExclusionDetailsModal`) and
+  `gvt --show-rules` (`describe()`) render these.
+- Config problems become `config.warnings`; they never raise.
+- **When you change `PRESETS`, update the presets table in README.md.**
+  `test_readme_lists_every_preset_pattern` fails if they drift.
+
+### Helping a user configure exclusions
+
+1. Run `gvt --show-rules` in their repo, or open `v` and press `X`, to see what is
+   excluded, which files each rule caught, and the largest files still counted.
+   The latter flags files a preset that's off would catch.
+2. Put repo-specific paths in a committed `.gvt.toml`; put personal preferences
+   that apply everywhere in `~/.config/gvt/config.toml`. Ask before editing the
+   user's config file.
+3. Remember that `presets` replaces the defaults (list every preset you want),
+   while `exclude` adds to them. Use `!pattern` to re-include and `re:` for a
+   regular expression.
+4. Run `gvt --show-rules` again to confirm, and check its warnings section.
 
 ## Code Conventions
 
@@ -92,7 +175,7 @@ make help           # Show all targets
 
 Two layers of tests live in this repo:
 
-1. **Unit / integration tests** — `tests/test_*.py`, run with `pytest -q` (~260 tests)
+1. **Unit / integration tests** — `tests/test_*.py`, run with `pytest -q` (~350 tests)
 2. **End-to-end tests** — `tests/e2e/*.sh`, a bash+tmux harness that exercises
    the installed `gvt` binary against real temp git repos. Sections:
    - `section_A.sh` — CLI lifecycle (A1–A14)
@@ -108,7 +191,17 @@ Two layers of tests live in this repo:
   `python3 -m venv venv-e2e && venv-e2e/bin/pip install -e .`)
 
 Supplement with manual TUI testing for things e2e can't easily cover
-(timeline scrubbing feel, diff rendering, side-by-side, blame overlays).
+(timeline scrubbing feel, diff rendering, side-by-side, blame overlays, the
+Evolution charts at 80 columns and at a wide size).
+
+Test notes:
+- An autouse fixture in `tests/conftest.py` points `$GVT_CONFIG` at a missing
+  file, so a developer's personal config never changes test results. Tests that
+  need a user config pass `user_config=` or set `GVT_CONFIG` themselves.
+- Evolution view tests pass `tz=UTC` and pin `FrequencyView.today`, so they don't
+  depend on the machine's time zone or clock.
+- `tests/e2e/run_all.sh` repeats every scenario inline instead of sourcing the
+  section files, so add a new scenario to both its section file and `run_all.sh`.
 
 Do NOT modify `src/` to make e2e scenarios pass — if an e2e test fails,
 it has found a real bug. Triage in `tests/e2e/FAILURES.md`.
