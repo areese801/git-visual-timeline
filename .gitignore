@@ -17,3 +17,6 @@ docs/external_test_plan.md
 docs/linkedin-post.md
 tests/e2e/results.tap
 tests/e2e/results.xml
+
+# Local review and agent artifacts (may describe unfixed issues)
+.agent/
