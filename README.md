@@ -207,6 +207,7 @@ Both config files use the same `[evolution]` table:
 | `use_gitattributes` | `true` | Read linguist attributes from `.gitattributes`. |
 | `exclude` | `[]` | Extra patterns (see syntax below). |
 | `ignore_files` | `[]` | Files of patterns to read, one per line, e.g. `"tools/evolution-excludes.txt"` or `{ path = ".clocignore", syntax = "regex" }`. gvt reads only the files listed here. Paths are relative to the repo root; `~` works. Missing files are skipped quietly, so a user-level entry only applies to repos that have the file. |
+| `trust_repo_regex` | `false` | Use regex rules that come from files inside a repo (its `.gvt.toml`, or an ignore file stored in the repo such as `.clocignore`). Only read from your own config; see [Untrusted repositories](#untrusted-repositories). |
 | `ignore_revs` | `".git-blame-ignore-revs"` | File of commit SHAs to leave out entirely, such as repo-wide formatting passes. It's the same file `git blame` and GitHub use. Set to `""` to turn it off. |
 
 ### Presets
@@ -232,9 +233,22 @@ Patterns work like `.gitignore` and match paths relative to the repo root:
 | `*` / `**` | Any characters within one path segment / across segments |
 | `?`, `[abc]`, `[!abc]` | One character, a set, a negated set |
 | `!docs/keep.md` | Re-include a path an earlier rule excluded |
-| `re:^src/legacy/` | A regular expression, searched anywhere in the path |
+| `re:^src/legacy/` | A regular expression, searched anywhere in the path (from a repo file, only with `trust_repo_regex`) |
 
 Lines in `ignore_files` use the same syntax unless the entry says `syntax = "regex"`, in which case every line is a regular expression. Blank lines and lines starting with `#` are ignored.
+
+Globs are matched in linear time, so no glob can make gvt slow. Regular expressions use Python's `re` module, so they're only accepted from sources you trust (next section).
+
+### Untrusted repositories
+
+Exclusion rules can come from files inside the repo you're viewing: `.gvt.toml`, `.gitattributes`, and ignore files stored in the repo. When the repo came from someone else, gvt treats those files as untrusted:
+
+- **Regex rules from repo files are skipped** unless your own config sets `trust_repo_regex = true`. A crafted regex can take hours to match, and a repo can't grant itself trust. Skipped rules are listed as warnings in `X` and `gvt --show-rules`.
+- **`.gitattributes` patterns are always globs**, as in git.
+- **Paths in a repo's `.gvt.toml`** (`ignore_files`, `ignore_revs`) must stay inside the repo. Absolute paths, `~`, `..` and symlinks that lead outside are refused.
+- **Limits:** files over 256 KB and patterns over 256 characters are skipped, and paths longer than 1,024 characters are never excluded.
+
+`trust_repo_regex` applies to every repo you open. Turn it on only if you mostly view your own repos, or keep your ignore files to globs.
 
 ### What exclusions change
 
@@ -265,10 +279,12 @@ exclude = ["!docs/architecture.md"]
 exclude = ["migrations/", "packages/db/seed/**", "re:^apps/[^/]+/public/"]
 ```
 
-**Reuse an existing ignore list**, here one of regular expressions:
+**Reuse an existing ignore list**, here one of regular expressions kept in each repo. Regex rules from files inside a repo need `trust_repo_regex`, which only your own config can set:
 
 ```toml
+# ~/.config/gvt/config.toml
 [evolution]
+trust_repo_regex = true
 ignore_files = [{ path = ".clocignore", syntax = "regex" }]
 ```
 

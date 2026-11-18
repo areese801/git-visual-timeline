@@ -11,7 +11,7 @@ from gvt.exclusions import (
     Exclusions,
     describe,
     gitattributes_rules,
-    glob_to_regex,
+    compile_glob,
     load_config,
     parse_pattern,
     user_config_path,
@@ -56,7 +56,7 @@ class TestGlobs:
         ],
     )
     def test_glob_matching(self, pattern, path, expected):
-        assert bool(glob_to_regex(pattern).match(path)) is expected
+        assert compile_glob(pattern).match(path) is expected
 
 
 class TestParsePattern:
@@ -173,7 +173,9 @@ class TestConfigLayers:
             repo / ".gvt.toml",
             '[evolution]\nignore_files = [{ path = ".clocignore", syntax = "regex" }]\n',
         )
-        exclusions = Exclusions.load(str(repo), user_config=None)
+        trusting = tmp_path / "user.toml"
+        trusting.write_text("[evolution]\ntrust_repo_regex = true\n")
+        exclusions = Exclusions.load(str(repo), user_config=trusting)
         assert exclusions.excludes("docs/prototype/a.html")
         assert exclusions.excludes("src/db/seed/data/x.json")
         assert not exclusions.excludes("src/app.py")
@@ -307,7 +309,10 @@ def test_layers_explain_how_rules_were_built(tmp_path):
     assert layers[".gitattributes"] == ("1 linguist rule", True)
     assert layers[str(tmp_path / "absent.toml")] == ("not found", False)
     assert layers[".gvt.toml"] == ("found  ·  1 exclude pattern", True)
-    assert layers[".clocignore (listed in .gvt.toml)"] == ("2 regex patterns", True)
+    assert layers[".clocignore (listed in .gvt.toml)"] == (
+        "0 regex patterns  ·  2 skipped (regex from a repo file needs trust_repo_regex)",
+        False,
+    )
     assert layers[".missingignore (listed in .gvt.toml)"] == ("not found in this repo", False)
     assert layers[".git-blame-ignore-revs"] == ("no file in this repo", False)
     assert [layer.name for layer in exclusions.layers][0] == "Built-in presets"
@@ -335,3 +340,131 @@ def test_readme_lists_every_preset_pattern():
         for pattern in patterns:
             assert f"`{pattern}`" in row, f"{pattern} ({name}) missing from the README"
         assert ("| yes |" in row) == (name in DEFAULT_PRESETS)
+
+
+class TestUntrustedRepoRules:
+    """
+    Rules that come from files inside a repo are attacker-controlled when the
+    repo is untrusted: they must not hang gvt or read files outside the repo.
+    """
+
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        return repo
+
+    def test_gitattributes_patterns_are_always_globs(self, tmp_path):
+        rules = gitattributes_rules("re:^(a+)+$ linguist-generated\n")
+        assert rules and not rules[0].regex
+
+    def test_repo_regex_rules_skipped_without_trust(self, tmp_path):
+        repo = self._repo(tmp_path)
+        (repo / ".gvt.toml").write_text('[evolution]\nexclude = ["re:^gen/", "*.csv"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.excludes("gen/a.py")
+        assert exclusions.excludes("a.csv")
+        assert any("trust_repo_regex" in w for w in exclusions.config.warnings)
+
+    def test_repo_regex_rules_used_when_user_trusts_them(self, tmp_path):
+        repo = self._repo(tmp_path)
+        (repo / ".gvt.toml").write_text('[evolution]\nexclude = ["re:^gen/"]\n')
+        user = tmp_path / "user.toml"
+        user.write_text("[evolution]\ntrust_repo_regex = true\n")
+        assert Exclusions.load(str(repo), user_config=user).excludes("gen/a.py")
+
+    def test_repo_cannot_grant_itself_trust(self, tmp_path):
+        repo = self._repo(tmp_path)
+        (repo / ".gvt.toml").write_text('[evolution]\ntrust_repo_regex = true\nexclude = ["re:^gen/"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.excludes("gen/a.py")
+        assert any("only read from your own config" in w for w in exclusions.config.warnings)
+
+    def test_in_repo_regex_ignore_file_needs_trust_even_from_user_config(self, tmp_path):
+        repo = self._repo(tmp_path)
+        (repo / ".clocignore").write_text("^seed/\n")
+        user = tmp_path / "user.toml"
+        user.write_text('[evolution]\nignore_files = [{ path = ".clocignore", syntax = "regex" }]\n')
+        assert not Exclusions.load(str(repo), user_config=user).excludes("seed/x.json")
+        user.write_text(
+            '[evolution]\ntrust_repo_regex = true\n'
+            'ignore_files = [{ path = ".clocignore", syntax = "regex" }]\n'
+        )
+        assert Exclusions.load(str(repo), user_config=user).excludes("seed/x.json")
+
+    def test_user_regex_outside_repo_is_trusted(self, tmp_path):
+        repo = self._repo(tmp_path)
+        rules_file = tmp_path / "my-rules.txt"
+        rules_file.write_text("^seed/\n")
+        user = tmp_path / "user.toml"
+        user.write_text(f'[evolution]\nignore_files = [{{ path = "{rules_file}", syntax = "regex" }}]\n')
+        assert Exclusions.load(str(repo), user_config=user).excludes("seed/x.json")
+
+    def test_repeated_double_stars_collapse_and_match_fast(self):
+        import time
+
+        rule = parse_pattern("**/" * 12 + "zz", "x")
+        start = time.time()
+        for _ in range(200):
+            rule.matches("a/" * 200 + "b")
+        assert time.time() - start < 0.5
+        assert rule.matches("deep/dir/zz")
+
+    @pytest.mark.parametrize(
+        "pattern, path",
+        [
+            ("*a*a*a*a*a*a*a*a*a*b", "a" * 250),
+            ("**/a/**/b/**/c/**/d/**/e", "/".join(["a", "b", "c", "d"] * 40)),
+            ("**/" * 40 + "x*y*z*q", "/".join(["xyz"] * 200)),
+        ],
+    )
+    def test_pathological_globs_match_fast(self, pattern, path):
+        import time
+
+        rule = parse_pattern(pattern, "x")
+        start = time.time()
+        for _ in range(20):
+            assert not rule.matches(path)
+        assert time.time() - start < 0.5
+
+    def test_overly_long_patterns_are_rejected(self):
+        with pytest.raises(ValueError, match="too long"):
+            parse_pattern("a" * 300, "x")
+
+    def test_very_long_paths_are_not_matched(self, tmp_path):
+        exclusions = Exclusions.load(str(tmp_path), user_config=None)
+        assert not exclusions.excludes("a/" * 600 + "pnpm-lock.yaml")
+
+    @pytest.mark.parametrize("entry", ["{outside}", "../outside.txt", "~/outside.txt"])
+    def test_repo_config_cannot_read_files_outside_the_repo(self, tmp_path, entry):
+        repo = self._repo(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("TOP-SECRET\n")
+        entry = entry.format(outside=outside)
+        (repo / ".gvt.toml").write_text(f'[evolution]\nignore_files = ["{entry}"]\nignore_revs = "{entry}"\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert "TOP-SECRET" not in describe(exclusions)
+        assert any("outside the repo" in w for w in exclusions.config.warnings)
+
+    def test_symlinked_rule_file_pointing_outside_is_refused(self, tmp_path):
+        repo = self._repo(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("TOP-SECRET\n")
+        (repo / ".clocignore").symlink_to(outside)
+        (repo / ".gvt.toml").write_text('[evolution]\nignore_files = [".clocignore"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert "TOP-SECRET" not in describe(exclusions)
+
+    def test_symlinked_gvt_toml_pointing_outside_is_refused(self, tmp_path):
+        repo = self._repo(tmp_path)
+        outside = tmp_path / "outside.toml"
+        outside.write_text('[evolution]\nexclude = ["*.py"]\n')
+        (repo / ".gvt.toml").symlink_to(outside)
+        assert not Exclusions.load(str(repo), user_config=None).excludes("a.py")
+
+    def test_huge_rule_files_are_skipped(self, tmp_path):
+        repo = self._repo(tmp_path)
+        (repo / "big.txt").write_text("*.py\n" * 200_000)
+        (repo / ".gvt.toml").write_text('[evolution]\nignore_files = ["big.txt"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.excludes("a.py")
+        assert any("too large" in w for w in exclusions.config.warnings)

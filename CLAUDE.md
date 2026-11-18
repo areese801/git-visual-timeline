@@ -139,8 +139,37 @@ reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
   each layer resolved; the `X` details modal (`ExclusionDetailsModal`) and
   `gvt --show-rules` (`describe()`) render these.
 - Config problems become `config.warnings`; they never raise.
+- **Rules from files inside the repo are untrusted** (the repo may come from a
+  stranger). Keep these properties, each covered by `TestUntrustedRepoRules`:
+  - Globs are matched by the linear-time `Glob` matcher, never compiled to a
+    regex. Don't reintroduce `re` for globs; backtracking regexes can hang the
+    UI for hours, and Python's `re` holds the GIL.
+  - Regex rules from repo files (`.gvt.toml`, in-repo ignore files) are
+    skipped unless the **user** config sets `trust_repo_regex`. The repo layer
+    can't set it. `.gitattributes` is always glob-only.
+  - Paths from the repo layer must resolve inside the repo (`_inside`),
+    including through symlinks, and file reads are capped
+    (`MAX_RULE_FILE_BYTES`). Patterns and matched paths have length caps.
 - **When you change `PRESETS`, update the presets table in README.md.**
   `test_readme_lists_every_preset_pattern` fails if they drift.
+
+### Untrusted repository content
+
+gvt is often run in repos the user didn't write, so everything read from a repo
+(commit messages, author names, file names and contents, `.gitattributes`,
+`.gvt.toml`) is untrusted:
+
+- Text shown on screen goes through `gvt.textsafe.safe_text()` at the
+  `GitRepo` boundary, so control characters and bidi controls are displayed as
+  escapes and never reach the terminal.
+- Never put repo text into Textual markup: escape it with
+  `textual.markup.escape()` (border titles), pass `markup=False` to `notify()`,
+  and give `Label`/`Static`/tree nodes `Text` objects, not strings.
+- Git runs with literal pathspecs (`GIT_LITERAL_PATHSPECS=1`),
+  `core.quotePath=false` and `core.fsmonitor=false`, and diffs and blame use
+  `--no-ext-diff --no-textconv`. Keep paths after `--`.
+- `tests/test_hostile_repo.py` exercises all of this against a hostile repo;
+  add a case there when adding a new place that shows repo content.
 
 ### Helping a user configure exclusions
 

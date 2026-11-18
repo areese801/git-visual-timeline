@@ -54,6 +54,11 @@ DEFAULT_IGNORE_REVS = ".git-blame-ignore-revs"
 
 LINGUIST_ATTRIBUTES = ("linguist-generated", "linguist-vendored", "linguist-documentation")
 
+# Limits that keep rules from an untrusted repo cheap to load and match
+MAX_PATTERN_LENGTH = 256
+MAX_MATCH_PATH = 1024  # longer paths are never matched (treated as kept)
+MAX_RULE_FILE_BYTES = 256_000
+
 
 def user_config_path() -> Path:
     """
@@ -78,49 +83,146 @@ def _label(path: Path) -> str:
     return "~" + text[len(home):] if text.startswith(home + os.sep) else text
 
 
-def glob_to_regex(pattern: str) -> re.Pattern[str]:
+# Path-level token: "**" matches any number of whole path segments
+_ANY_SEGMENTS = "**"
+
+
+def _class_end(segment: str, start: int) -> int:
     """
-    Compile a gitignore-style glob into a regex matched against repo-relative paths.
+    Index of the "]" closing a [class] that opens at `start`, or -1.
+
+    A "]" right after "[" or "[!" is a literal member of the class.
+    """
+    j = start + 1
+    if j < len(segment) and segment[j] == "!":
+        j += 1
+    if j < len(segment) and segment[j] == "]":
+        j += 1
+    return segment.find("]", j)
+
+
+def _segment_tokens(segment: str) -> list[tuple[str, object]]:
+    """
+    Tokenize one path segment of a glob: "*", "?", [classes], literals.
+    """
+    tokens: list[tuple[str, object]] = []
+    i = 0
+    while i < len(segment):
+        ch = segment[i]
+        if ch == "*":
+            while i + 1 < len(segment) and segment[i + 1] == "*":
+                i += 1  # "**" inside a segment acts like "*"
+            tokens.append(("star", None))
+        elif ch == "?":
+            tokens.append(("any", None))
+        elif ch == "[" and _class_end(segment, i) != -1:
+            end = _class_end(segment, i)
+            body = segment[i + 1:end]
+            negate = body.startswith("!")
+            if negate:
+                body = body[1:]
+            chars: set[str] = set()
+            j = 0
+            while j < len(body):
+                if j + 2 < len(body) and body[j + 1] == "-":
+                    chars.update(chr(c) for c in range(ord(body[j]), ord(body[j + 2]) + 1))
+                    j += 3
+                else:
+                    chars.add(body[j])
+                    j += 1
+            tokens.append(("class", (frozenset(chars), negate)))
+            i = end
+        else:
+            tokens.append(("lit", ch))
+        i += 1
+    return tokens
+
+
+def _token_matches(token: tuple[str, object], ch: str) -> bool:
+    kind, value = token
+    if kind == "any":
+        return True
+    if kind == "lit":
+        return ch == value
+    chars, negate = value  # class
+    return (ch in chars) != negate
+
+
+def _wildcard_match(tokens: list, items: list, is_star, item_matches) -> bool:
+    """
+    Linear-time wildcard matching with a single backtrack point.
+
+    `is_star(token)` marks tokens that match any run of items; every other
+    token matches exactly one item when `item_matches(token, item)`.
+    """
+    t = i = 0
+    star_t, star_i = -1, 0
+    while i < len(items):
+        if t < len(tokens) and not is_star(tokens[t]) and item_matches(tokens[t], items[i]):
+            t += 1
+            i += 1
+        elif t < len(tokens) and is_star(tokens[t]):
+            star_t, star_i = t, i
+            t += 1
+        elif star_t != -1:
+            t = star_t + 1
+            star_i += 1
+            i = star_i
+        else:
+            return False
+    while t < len(tokens) and is_star(tokens[t]):
+        t += 1
+    return t == len(tokens)
+
+
+class Glob:
+    """
+    A gitignore-style glob, matched without regular expressions so that no
+    pattern can make matching slow.
 
     A pattern with no "/" (other than a trailing one) matches at any depth; a
     pattern containing "/" is anchored at the repo root. A trailing "/" matches
     only directories (anything beneath them). "*" stays within a path segment,
-    "**" crosses segments, "?" and [classes] work as in gitignore.
+    "**" crosses segments, "?" and [classes] work as in gitignore. A pattern
+    that names a directory also matches everything beneath it.
     """
-    dir_only = pattern.endswith("/")
-    body = pattern.rstrip("/")
-    anchored = "/" in body
-    body = body.lstrip("/")
 
-    out = []
-    i = 0
-    while i < len(body):
-        if body.startswith("**/", i):
-            out.append("(?:.*/)?")
-            i += 3
-        elif body.startswith("**", i):
-            out.append(".*")
-            i += 2
-        elif body[i] == "*":
-            out.append("[^/]*")
-            i += 1
-        elif body[i] == "?":
-            out.append("[^/]")
-            i += 1
-        elif body[i] == "[" and "]" in body[i + 1:]:
-            end = body.index("]", i + 1)
-            cls = body[i + 1:end]
-            if cls.startswith("!"):
-                cls = "^" + cls[1:]
-            out.append(f"[{cls}]")
-            i = end + 1
-        else:
-            out.append(re.escape(body[i]))
-            i += 1
+    def __init__(self, pattern: str) -> None:
+        dir_only = pattern.endswith("/")
+        body = pattern.rstrip("/")
+        anchored = "/" in body
+        segments = [seg for seg in body.lstrip("/").split("/") if seg]
+        if not anchored:
+            segments.insert(0, _ANY_SEGMENTS)
+        # A directory-only pattern needs at least one segment beneath it
+        segments += ["*", _ANY_SEGMENTS] if dir_only else [_ANY_SEGMENTS]
 
-    prefix = "" if anchored else "(?:.*/)?"
-    suffix = "/.*" if dir_only else "(?:/.*)?"
-    return re.compile(f"^{prefix}{''.join(out)}{suffix}$")
+        tokens: list[object] = []
+        for seg in segments:
+            if seg == _ANY_SEGMENTS:
+                if not tokens or tokens[-1] is not _ANY_SEGMENTS:
+                    tokens.append(_ANY_SEGMENTS)  # repeated "**/" collapses
+            else:
+                tokens.append(_segment_tokens(seg))
+        self.tokens = tokens
+        self.pattern = pattern
+
+    def match(self, path: str) -> bool:
+        return _wildcard_match(
+            self.tokens,
+            path.split("/"),
+            lambda token: token is _ANY_SEGMENTS,
+            lambda token, segment: _wildcard_match(
+                token, list(segment), lambda t: t[0] == "star", _token_matches
+            ),
+        )
+
+
+def compile_glob(pattern: str) -> Glob:
+    """
+    Compile a gitignore-style glob (see Glob).
+    """
+    return Glob(pattern)
 
 
 @dataclass(frozen=True)
@@ -133,14 +235,14 @@ class Rule:
     source: str
     negate: bool = False
     regex: bool = False
-    compiled: re.Pattern[str] = field(default=re.compile(""), compare=False, hash=False, repr=False)
+    compiled: re.Pattern[str] | Glob = field(default=re.compile(""), compare=False, hash=False, repr=False)
     # The line as written, for listings
     text: str = field(default="", compare=False)
 
     def matches(self, path: str) -> bool:
         if self.regex:
             return self.compiled.search(path) is not None
-        return self.compiled.match(path) is not None
+        return self.compiled.match(path)
 
     @property
     def label(self) -> str:
@@ -154,7 +256,7 @@ class Rule:
         return safe_text(f"{self.source}  {text}")
 
 
-def parse_pattern(text: str, source: str, syntax: str = "glob") -> Rule | None:
+def parse_pattern(text: str, source: str, syntax: str = "glob", allow_regex: bool = True) -> Rule | None:
     """
     Parse one pattern line.
 
@@ -162,20 +264,23 @@ def parse_pattern(text: str, source: str, syntax: str = "glob") -> Rule | None:
         Blank lines and "#" comments return None.
     :param source: Layer label for listings (e.g. ".gvt.toml").
     :param syntax: Default syntax for the line, "glob" or "regex".
-    :raises ValueError: If a regular expression doesn't compile.
+    :param allow_regex: False to read every line as a glob ("re:" is literal).
+    :raises ValueError: If the pattern is too long or a regex doesn't compile.
     """
     line = text.strip()
     if not line or line.startswith("#"):
         return None
+    if len(line) > MAX_PATTERN_LENGTH:
+        raise ValueError(f"pattern in {source} is too long (over {MAX_PATTERN_LENGTH} characters)")
     negate = line.startswith("!")
     if negate:
         line = line[1:]
-    regex = syntax == "regex"
-    if line.startswith("re:"):
+    regex = allow_regex and syntax == "regex"
+    if allow_regex and line.startswith("re:"):
         regex = True
         line = line[3:]
     try:
-        compiled = re.compile(line) if regex else glob_to_regex(line)
+        compiled = re.compile(line) if regex else compile_glob(line)
     except re.error as e:
         raise ValueError(f"bad pattern {text.strip()!r} in {source}: {e}") from e
     return Rule(
@@ -183,12 +288,14 @@ def parse_pattern(text: str, source: str, syntax: str = "glob") -> Rule | None:
     )
 
 
-def gitattributes_rules(text: str) -> list[Rule]:
+def gitattributes_rules(text: str, warnings: list[str] | None = None) -> list[Rule]:
     """
     Rules from .gitattributes lines that set or unset linguist attributes.
 
     "linguist-generated" / "=true" excludes; "-linguist-generated" / "=false"
-    re-includes.
+    re-includes. Patterns are always globs, as in git.
+
+    :param warnings: Collects problems with individual lines, if given.
     """
     rules = []
     for line in text.splitlines():
@@ -204,7 +311,12 @@ def gitattributes_rules(text: str) -> list[Rule]:
             unset = attr.startswith(("-", "!")) or value.lower() == "false"
             verdict = "include" if unset else "exclude"
         if verdict:
-            rule = parse_pattern(pattern, ".gitattributes")
+            try:
+                rule = parse_pattern(pattern, ".gitattributes", allow_regex=False)
+            except ValueError as e:
+                if warnings is not None:
+                    warnings.append(str(e))
+                continue
             if rule:
                 rules.append(replace(rule, negate=verdict == "include"))
     return rules
@@ -224,6 +336,10 @@ class ExclusionConfig:
     # (path, syntax, source label) in layer order
     ignore_files: list[tuple[str, str, str]] = field(default_factory=list)
     ignore_revs: str = DEFAULT_IGNORE_REVS
+    # Which layer set ignore_revs: "default", the user label, or REPO_CONFIG_NAME
+    ignore_revs_source: str = "default"
+    # Regex rules from files inside the repo are skipped unless the user opts in
+    trust_repo_regex: bool = False
     # Label of the user layer (its path, shortened)
     user_label: str = ""
     # Config files that exist, by label
@@ -231,15 +347,46 @@ class ExclusionConfig:
     warnings: list[str] = field(default_factory=list)
 
 
-def _read_layer(path: Path, label: str, config: ExclusionConfig) -> None:
+def _inside(root: str, path: Path | str) -> bool:
+    """
+    True when `path` (after following symlinks) is inside `root`.
+    """
+    real_root = os.path.realpath(root)
+    return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+
+
+def _read_small(path: Path, label: str, config: ExclusionConfig) -> str | None:
+    """
+    Read a config or rules file, refusing ones over MAX_RULE_FILE_BYTES.
+    """
+    try:
+        if path.stat().st_size > MAX_RULE_FILE_BYTES:
+            config.warnings.append(f"{label} is too large to read (over {MAX_RULE_FILE_BYTES // 1000} KB)")
+            return None
+        return path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        config.warnings.append(f"couldn't read {label}: {e}")
+        return None
+
+
+def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str | None = None) -> None:
     """
     Merge one config file into `config` (scalars override, lists append).
+
+    :param repo_root: Set for the repo layer: the file must stay inside it,
+        and settings only a user may grant are ignored.
     """
     if not path.is_file():
         return
+    if repo_root is not None and not _inside(repo_root, path):
+        config.warnings.append(f"{label} points outside the repo; ignored")
+        return
+    text = _read_small(path, label, config)
+    if text is None:
+        return
     try:
-        data = tomllib.loads(path.read_text())
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
         config.warnings.append(f"couldn't read {label}: {e}")
         return
     config.found.append(label)
@@ -262,6 +409,15 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig) -> None:
         config.use_gitattributes = bool(section["use_gitattributes"])
     if "ignore_revs" in section:
         config.ignore_revs = str(section["ignore_revs"])
+        config.ignore_revs_source = label
+    if "trust_repo_regex" in section:
+        if repo_root is None:
+            config.trust_repo_regex = bool(section["trust_repo_regex"])
+        else:
+            config.warnings.append(
+                f"{label}: trust_repo_regex is only read from your own config "
+                f"({config.user_label or '~/.config/gvt/config.toml'}); ignored"
+            )
 
     config.exclude += [(str(p), label) for p in section.get("exclude", [])]
     for entry in section.get("ignore_files", []):
@@ -286,7 +442,7 @@ def load_config(repo_root: str, user_config: Path | None = USER_CONFIG) -> Exclu
     if user_config is not None:
         config.user_label = _label(user_config)
         _read_layer(user_config, config.user_label, config)
-    _read_layer(Path(repo_root) / REPO_CONFIG_NAME, REPO_CONFIG_NAME, config)
+    _read_layer(Path(repo_root) / REPO_CONFIG_NAME, REPO_CONFIG_NAME, config, repo_root=repo_root)
     return config
 
 
@@ -360,15 +516,21 @@ class Exclusions:
         """
         config = load_config(repo_root, user_config)
         rules: list[Rule] = []
+        # Regex rules skipped because they come from inside an untrusted repo
+        skipped_regex: Counter[str] = Counter()
 
-        def add(text: str, source: str, syntax: str = "glob") -> None:
+        def add(text: str, source: str, syntax: str = "glob", from_repo: bool = False) -> None:
             try:
                 rule = parse_pattern(text, source, syntax)
             except ValueError as e:
                 config.warnings.append(str(e))
                 return
-            if rule:
-                rules.append(rule)
+            if rule is None:
+                return
+            if rule.regex and from_repo and not config.trust_repo_regex:
+                skipped_regex[source] += 1
+                return
+            rules.append(rule)
 
         layers: list[LayerStatus] = []
 
@@ -389,13 +551,15 @@ class Exclusions:
         if not config.use_gitattributes:
             layers.append(LayerStatus(".gitattributes", "turned off (use_gitattributes = false)", False))
         elif attributes.is_file():
-            try:
-                found = gitattributes_rules(attributes.read_text())
+            text = _read_small(attributes, ".gitattributes", config) if _inside(repo_root, attributes) else None
+            if text is None:
+                if not _inside(repo_root, attributes):
+                    config.warnings.append(".gitattributes points outside the repo; ignored")
+                layers.append(LayerStatus(".gitattributes", "couldn't be read", False))
+            else:
+                found = gitattributes_rules(text, config.warnings)
                 rules += found
                 layers.append(LayerStatus(".gitattributes", _count(len(found), "linguist rule"), bool(found)))
-            except (OSError, UnicodeDecodeError) as e:
-                config.warnings.append(f"couldn't read .gitattributes: {e}")
-                layers.append(LayerStatus(".gitattributes", "couldn't be read", False))
         else:
             layers.append(LayerStatus(".gitattributes", "no file in this repo", False))
 
@@ -403,9 +567,10 @@ class Exclusions:
             if not label:
                 continue
             before = len(rules)
+            from_repo = label == REPO_CONFIG_NAME
             patterns = [pattern for pattern, source in config.exclude if source == label]
             for pattern in patterns:
-                add(pattern, label)
+                add(pattern, label, from_repo=from_repo)
             if label in config.found:
                 detail = f"found  ·  {_count(len(rules) - before, 'exclude pattern')}"
             else:
@@ -417,25 +582,45 @@ class Exclusions:
                     continue
                 file = _resolve(repo_root, path)
                 name = f"{path} (listed in {label})"
+                outside = os.path.isabs(os.path.expanduser(path)) or not _inside(repo_root, file)
+                if from_repo and (path.startswith("~") or outside):
+                    config.warnings.append(f"{label}: ignore file {path} is outside the repo; ignored")
+                    layers.append(LayerStatus(name, "outside the repo; ignored", False))
+                    continue
                 if not file.is_file():
                     layers.append(LayerStatus(name, "not found in this repo", False))
                     continue
-                try:
-                    lines = file.read_text().splitlines()
-                except (OSError, UnicodeDecodeError) as e:
-                    config.warnings.append(f"couldn't read {path}: {e}")
+                text = _read_small(file, path, config)
+                if text is None:
                     layers.append(LayerStatus(name, "couldn't be read", False))
                     continue
-                before = len(rules)
-                for line in lines:
-                    add(line, path, syntax)
-                layers.append(LayerStatus(name, _count(len(rules) - before, f"{syntax} pattern"), True))
+                before, skipped_before = len(rules), skipped_regex[path]
+                for line in text.splitlines():
+                    # A file inside the repo is repo-controlled, whoever listed it
+                    add(line, path, syntax, from_repo=not outside)
+                added, skipped = len(rules) - before, skipped_regex[path] - skipped_before
+                detail = _count(added, f"{syntax} pattern")
+                if skipped:
+                    detail += f"  ·  {skipped} skipped (regex from a repo file needs trust_repo_regex)"
+                layers.append(LayerStatus(name, detail, added > 0))
+
+        for source, count in skipped_regex.items():
+            config.warnings.append(
+                f"{source}: skipped {_count(count, 'regex rule')} from inside the repo; set "
+                f"trust_repo_regex = true in your own config to use them"
+            )
 
         revs: set[str] = set()
+        revs_text = None
         if config.ignore_revs:
             revs_file = _resolve(repo_root, config.ignore_revs)
-            if revs_file.is_file():
-                for line in revs_file.read_text().splitlines():
+            user_set = config.ignore_revs_source == config.user_label and config.user_label
+            if not user_set and (config.ignore_revs.startswith("~") or not _inside(repo_root, revs_file)):
+                config.warnings.append(f"ignore_revs {config.ignore_revs} is outside the repo; ignored")
+            elif revs_file.is_file():
+                revs_text = _read_small(revs_file, config.ignore_revs, config)
+            if revs_text is not None:
+                for line in revs_text.splitlines():
                     sha = line.strip()
                     if re.fullmatch(r"[0-9a-f]{40}", sha):
                         revs.add(sha)
@@ -450,6 +635,8 @@ class Exclusions:
         """
         The last rule matching `path` (it may be a re-include), or None.
         """
+        if len(path) > MAX_MATCH_PATH:
+            return None
         if path not in self._verdicts:
             match = None
             for rule in self.rules:
@@ -533,7 +720,7 @@ class Exclusions:
         for name, patterns in PRESETS.items():
             if name in self.config.presets:
                 continue
-            if any(glob_to_regex(pattern).match(path) for pattern in patterns):
+            if any(compile_glob(pattern).match(path) for pattern in patterns):
                 return name
         return None
 
@@ -549,6 +736,7 @@ def describe(exclusions: Exclusions) -> str:
         f"presets: {', '.join(config.presets) or '(none)'}"
         + (f"  (available: {', '.join(available)})" if available else ""),
         f".gitattributes linguist rules: {'on' if config.use_gitattributes else 'off'}",
+        f"regex rules from repo files: {'trusted' if config.trust_repo_regex else 'skipped (trust_repo_regex is off)'}",
         f"config files: {', '.join(config.found) or '(none found)'}",
         f"ignored commits: {len(exclusions.ignore_revs)} from {config.ignore_revs or '(disabled)'}",
         "",
