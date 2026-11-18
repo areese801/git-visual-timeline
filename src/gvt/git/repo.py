@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -10,8 +11,19 @@ from git import Repo
 from git.exc import GitCommandError
 
 from gvt.logging_setup import get_logger
+from gvt.textsafe import safe_text
 
 log = get_logger(__name__)
+
+# Commit records start with a NUL byte, which can't appear in commit metadata
+LOG_FORMAT = "--format=%x00%H%n%at%n%an%n%s"
+RECORD_SEPARATOR = "\x00"
+
+# Never run diff programs or text converters configured by the repo
+SAFE_DIFF = ("--no-ext-diff", "--no-textconv")
+
+# Largest working-tree file shown as a preview
+MAX_PREVIEW_BYTES = 2_000_000
 
 
 @dataclass
@@ -58,6 +70,13 @@ class GitRepo:
     def __init__(self, path: str):
         self.repo = Repo(path, search_parent_directories=True)
         self.root = self.repo.working_tree_dir
+        # Paths are file names, not pathspecs: "app/[slug]/page.tsx" must not
+        # match "app/s/page.tsx". List non-ASCII paths as-is instead of
+        # C-quoting them, and never run a repo-configured fsmonitor hook.
+        self.repo.git.update_environment(GIT_LITERAL_PATHSPECS="1")
+        self.repo.git.set_persistent_git_options(
+            c=["core.quotePath=false", "core.fsmonitor=false"]
+        )
 
     def _build_ref_map(self) -> dict[str, list[str]]:
         """Build a sha -> [ref names] map, tolerating individual bad refs."""
@@ -87,7 +106,7 @@ class GitRepo:
 
         # Use git log with --numstat for stats, avoiding gitpython's object parser
         output = self.repo.git.log(
-            "--format=---GVT_START---%n%H%n%at%n%an%n%s",
+            LOG_FORMAT,
             "--numstat",
             "--follow",
             "--", rel_path,
@@ -97,7 +116,7 @@ class GitRepo:
             return []
 
         commits = []
-        chunks = output.split("---GVT_START---")
+        chunks = output.split(RECORD_SEPARATOR)
 
         for chunk in chunks:
             chunk = chunk.strip()
@@ -117,8 +136,8 @@ class GitRepo:
             except (ValueError, IndexError):
                 continue
 
-            author = lines[2].strip()
-            subject = lines[3].strip()
+            author = safe_text(lines[2].strip())
+            subject = safe_text(lines[3].strip())
 
             # Remaining lines are numstat (tab-separated: adds, dels, filename)
             additions = 0
@@ -162,7 +181,7 @@ class GitRepo:
         output = self.repo.git.log(
             f"--max-count={max_count}",
             "--no-merges",
-            "--format=---GVT_START---%n%H%n%at%n%an%n%s",
+            LOG_FORMAT,
             "--shortstat",
         )
 
@@ -170,7 +189,7 @@ class GitRepo:
             return []
 
         commits = []
-        chunks = output.split("---GVT_START---")
+        chunks = output.split(RECORD_SEPARATOR)
 
         for chunk in chunks:
             chunk = chunk.strip()
@@ -190,15 +209,14 @@ class GitRepo:
             except (ValueError, IndexError):
                 continue
 
-            author = lines[2].strip()
-            subject = lines[3].strip()
+            author = safe_text(lines[2].strip())
+            subject = safe_text(lines[3].strip())
 
             # Parse shortstat line (e.g. " 3 files changed, 10 insertions(+), 5 deletions(-)")
             total_adds = 0
             total_dels = 0
             for line in lines[4:]:
                 if "insertion" in line or "deletion" in line:
-                    import re
                     add_match = re.search(r"(\d+) insertion", line)
                     del_match = re.search(r"(\d+) deletion", line)
                     if add_match:
@@ -227,26 +245,28 @@ class GitRepo:
         rel_path = self._to_relative(path)
         # Use git diff directly for context line control
         diff_output = self.repo.git.diff(
-            f"-U{context_lines}", commit_a, commit_b, "--", rel_path
+            *SAFE_DIFF, f"-U{context_lines}", commit_a, commit_b, "--", rel_path
         )
-        return diff_output
+        return safe_text(diff_output)
 
     def has_uncommitted_changes(self, path: str) -> bool:
         """Check if a file has uncommitted changes (staged or unstaged)."""
         rel_path = self._to_relative(path)
         # Check both staged and unstaged
-        diff_output = self.repo.git.diff("HEAD", "--", rel_path)
+        diff_output = self.repo.git.diff(*SAFE_DIFF, "HEAD", "--", rel_path)
         return bool(diff_output.strip())
 
     def get_diff_to_working_tree(self, path: str, commit_sha: str, context_lines: int = 3) -> str:
         """Get diff from a commit to the current working tree for a file."""
         rel_path = self._to_relative(path)
-        return self.repo.git.diff(f"-U{context_lines}", commit_sha, "--", rel_path)
+        return safe_text(
+            self.repo.git.diff(*SAFE_DIFF, f"-U{context_lines}", commit_sha, "--", rel_path)
+        )
 
     def get_working_tree_stats(self, path: str) -> tuple[int, int]:
         """Get +/- stats for uncommitted changes to a file."""
         rel_path = self._to_relative(path)
-        output = self.repo.git.diff("--numstat", "HEAD", "--", rel_path)
+        output = self.repo.git.diff(*SAFE_DIFF, "--numstat", "HEAD", "--", rel_path)
         if not output.strip():
             return (0, 0)
         parts = output.strip().split("\t")
@@ -262,7 +282,7 @@ class GitRepo:
         """
         rel_path = self._to_relative(path)
         try:
-            return self.repo.git.show(f"{commit_sha}:{rel_path}")
+            return safe_text(self.repo.git.show(f"{commit_sha}:{rel_path}"))
         except GitCommandError as e:
             log.warning("git show %s:%s failed: %s", commit_sha, rel_path, e)
             return ""
@@ -275,7 +295,7 @@ class GitRepo:
         rel_path = self._to_relative(path)
         try:
             output = self.repo.git.blame(
-                commit_sha, "--", rel_path,
+                "--no-textconv", commit_sha, "--", rel_path,
                 porcelain=True,
             )
         except GitCommandError as e:
@@ -296,7 +316,7 @@ class GitRepo:
                     dates.get(current_hash, ""),
                 ))
             elif raw_line.startswith("author "):
-                authors[current_hash] = raw_line[7:]
+                authors[current_hash] = safe_text(raw_line[7:])
             elif raw_line.startswith("author-time "):
                 from datetime import datetime, timezone
                 ts = int(raw_line[12:])
@@ -329,7 +349,7 @@ class GitRepo:
         # Lines come in pairs: email, then name
         for i in range(0, len(lines) - 1, 2):
             email = lines[i].strip()
-            name = lines[i + 1].strip()
+            name = safe_text(lines[i + 1].strip())
             if not email:
                 continue
             if email in by_email:
@@ -353,7 +373,7 @@ class GitRepo:
         """
         try:
             output = self.repo.git.diff_tree(
-                "--numstat", "-r", "--root", "--no-commit-id", commit_sha
+                *SAFE_DIFF, "--numstat", "-r", "--root", "--no-commit-id", commit_sha
             )
         except (GitCommandError, ValueError) as e:
             log.warning("diff-tree for %s failed: %s", commit_sha, e)
@@ -396,12 +416,21 @@ class GitRepo:
     def get_file_content(self, path: str) -> str:
         """
         Get the current working tree content of a file.
+
+        Only regular files inside the repo are read (a symlink pointing
+        elsewhere, a FIFO or a device returns ""), and only the first
+        MAX_PREVIEW_BYTES.
         """
         rel_path = self._to_relative(path)
         full_path = os.path.join(self.root, rel_path)
+        real_root = os.path.realpath(self.root)
+        real_path = os.path.realpath(full_path)
+        if os.path.commonpath([real_root, real_path]) != real_root or not os.path.isfile(real_path):
+            log.info("not previewing %s: outside the repo or not a regular file", rel_path)
+            return ""
         try:
-            with open(full_path, "r", errors="replace") as f:
-                return f.read()
+            with open(real_path, "r", errors="replace") as f:
+                return safe_text(f.read(MAX_PREVIEW_BYTES))
         except (OSError, UnicodeDecodeError):
             return ""
 
