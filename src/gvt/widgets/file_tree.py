@@ -144,10 +144,11 @@ class FileTreeWidget(Widget, can_focus=True):
         for subdir in subdirs:
             # Display name is the last component
             display_name = subdir.split("/")[-1]
+            # Text, not str: a str label would be parsed as markup
             if is_untracked:
                 label = Text(display_name, style=COLOR_DIM)
             else:
-                label = display_name
+                label = Text(display_name)
             node = parent_node.add(label, data=subdir, expand=False)
             node.allow_expand = True
 
@@ -156,7 +157,7 @@ class FileTreeWidget(Widget, can_focus=True):
             if is_untracked:
                 label = Text(f"? {display_name}", style=COLOR_DIM)
             else:
-                label = display_name
+                label = Text(display_name)
             parent_node.add_leaf(label, data=file_path)
 
     @on(Tree.NodeExpanded)
