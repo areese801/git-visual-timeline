@@ -5,6 +5,7 @@ import os
 import sys
 
 from gvt import __version__
+from gvt.exclusions import Exclusions, describe
 
 
 def main():
@@ -17,6 +18,11 @@ def main():
         nargs="?",
         default=None,
         help="Open directly to this file's timeline",
+    )
+    parser.add_argument(
+        "--show-rules",
+        action="store_true",
+        help="Print the Evolution exclusion rules for this repo and exit",
     )
     parser.add_argument(
         "--version",
@@ -58,6 +64,11 @@ def main():
         except InvalidGitRepositoryError:
             print("Error: not a git repository (or any parent)", file=sys.stderr)
             sys.exit(1)
+
+    if args.show_rules:
+        print(f"Evolution exclusion rules for {repo.working_tree_dir}\n")
+        print(describe(Exclusions.load(repo.working_tree_dir)))
+        sys.exit(0)
 
     from gvt.app import GVTApp
 

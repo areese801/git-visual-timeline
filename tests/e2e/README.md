@@ -56,7 +56,7 @@ bash tests/e2e/section_I.sh   # Resilience
 
 | Section | Scenarios | What it exercises |
 |---|---|---|
-| A | A1–A13 | `--version`, `--help`, exit codes, file arg, qq quit, single-q modal, SIGTERM/Ctrl+C cleanup |
+| A | A1–A14 | `--version`, `--help`, exit codes, file arg, qq quit, single-q modal, SIGTERM/Ctrl+C cleanup, Evolution open/close |
 | G | G1–G5 | `~/.config/gvt/gvt.log` creation, `GVT_LOG_LEVEL`, log rotation, read-only log dir fallback |
 | I | I1–I3 | Corrupt ref file, detached HEAD, `.git/HEAD` deletion mid-session |
 
@@ -65,7 +65,7 @@ they need interactive TUI validation or a large external repo (e.g. cpython).
 
 ## Expected results
 
-At time of writing: 21 scenarios — 18 pass, 3 skip (A12 SIGKILL, I4 concurrent
+At time of writing: 22 scenarios — 19 pass, 3 skip (A12 SIGKILL, I4 concurrent
 commit, I5 concurrent pytest), 0 fail.
 
 ## Debugging a failure

@@ -183,6 +183,34 @@ else
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
+# ── A14: Evolution screen opens, closes, and gvt still quits with qq
+SESSION="a14_evolution"
+tmux_spawn "$SESSION" "cd $FIXTURE_REPO && $GVT file.py"
+sleep 3
+if session_alive "$SESSION"; then
+    send_keys "$SESSION" "v"
+    if wait_for_content "$SESSION" "Evolution — file.py" 10; then
+        send_keys "$SESSION" Escape
+        if wait_for_content "$SESSION" "[2] Timeline" 10; then
+            send_keys "$SESSION" "q"
+            send_keys "$SESSION" "q"
+            wait_for_exit "$SESSION" 10
+            if ! session_alive "$SESSION"; then
+                log_result "A14" pass "v opens Evolution, Esc returns, qq exits"
+            else
+                log_result "A14" fail "qq did not exit after closing Evolution"
+            fi
+        else
+            log_result "A14" fail "Esc did not return to the pane layout"
+        fi
+    else
+        log_result "A14" fail "Evolution screen not shown after v. Pane: $(echo "$PANE_TEXT" | head -3)"
+    fi
+else
+    log_result "A14" fail "gvt exited before v could be sent"
+fi
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+
 rm -rf "$TMPDIR_A"
 
 echo ""

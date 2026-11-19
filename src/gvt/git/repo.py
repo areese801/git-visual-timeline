@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from git import Repo
@@ -25,6 +27,17 @@ SAFE_DIFF = ("--no-ext-diff", "--no-textconv")
 # Largest working-tree file shown as a preview
 MAX_PREVIEW_BYTES = 2_000_000
 
+# Commit timestamps are clamped to 1970..2100: a crafted date outside Python's
+# datetime range would otherwise crash parsing
+MAX_TIMESTAMP = 4_102_444_800  # 2100-01-01 UTC
+
+
+def commit_date(timestamp: int) -> datetime:
+    """
+    UTC datetime for a git timestamp, clamped to 1970-01-01..2100-01-01.
+    """
+    return datetime.fromtimestamp(max(0, min(timestamp, MAX_TIMESTAMP)), tz=timezone.utc)
+
 
 @dataclass
 class CommitInfo:
@@ -38,6 +51,8 @@ class CommitInfo:
     deletions: int
     is_wip: bool = False
     refs: str = ""  # branch/tag names associated with this commit
+    # (path, additions, deletions) per file; filled by get_scope_commits
+    files: list[tuple[str, int, int]] = field(default_factory=list)
 
     @property
     def short_hash(self) -> str:
@@ -64,12 +79,34 @@ class CommitInfo:
         return f"{self.message} {self.refs} {self.author}"
 
 
+@dataclass
+class TagInfo:
+    """
+    A tag name and the commit it points at.
+    """
+
+    name: str
+    hexsha: str
+    date: datetime
+
+
+# Rename syntax in --numstat paths: "dir/{old => new}/f" or "old => new"
+RENAME_BRACES = re.compile(r"\{([^{}]*) => ([^{}]*)\}")
+
+
+# Max number of scoped logs kept in memory
+SCOPE_CACHE_SIZE = 8
+
+
 class GitRepo:
     """Wraps gitpython to provide gvt-specific operations."""
 
     def __init__(self, path: str):
         self.repo = Repo(path, search_parent_directories=True)
         self.root = self.repo.working_tree_dir
+        self._scope_cache: OrderedDict[tuple[str, str], list[CommitInfo]] = OrderedDict()
+        # Scoped logs are read from worker threads
+        self._scope_cache_lock = threading.Lock()
         # Paths are file names, not pathspecs: "app/[slug]/page.tsx" must not
         # match "app/s/page.tsx". List non-ASCII paths as-is instead of
         # C-quoting them, and never run a repo-configured fsmonitor hook.
@@ -89,7 +126,8 @@ class GitRepo:
         for ref in refs:
             try:
                 sha = ref.commit.hexsha
-                ref_map.setdefault(sha, []).append(ref.name)
+                # Ref names may hold bidi or C1 characters; they're only displayed
+                ref_map.setdefault(sha, []).append(safe_text(ref.name))
             except (GitCommandError, AttributeError, ValueError) as e:
                 log.debug("skipping ref %s: %s", getattr(ref, "name", "?"), e)
         return ref_map
@@ -158,7 +196,7 @@ class GitRepo:
             commits.append(
                 CommitInfo(
                     hexsha=hexsha,
-                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    date=commit_date(timestamp),
                     author=author,
                     message=subject,
                     additions=additions,
@@ -184,14 +222,129 @@ class GitRepo:
             LOG_FORMAT,
             "--shortstat",
         )
+        return self._parse_log(output, ref_map)
 
-        if not output:
+    def get_scope_commits(self, path: str) -> list[CommitInfo]:
+        """
+        Get all non-merge commits touching a file or directory, newest-first.
+
+        Each commit carries per-file line counts (CommitInfo.files), limited to
+        the scope by the pathspec, so a directory's additions/deletions only
+        count its own files. Binary files count as 0 lines. Results are cached per
+        (scope, HEAD) so a new commit invalidates them.
+
+        :param path: File or directory path, relative or absolute. "" or "." means
+            the whole repo.
+        :returns: Commits newest-first; empty for an empty repo or unknown path.
+        :raises GitCommandError: If git log fails for a reason other than an
+            empty repo.
+        """
+        scope = self._normalize_scope(path)
+        head = self.get_head_sha()
+        if head is None:
             return []
 
-        commits = []
-        chunks = output.split(RECORD_SEPARATOR)
+        key = (scope, head)
+        with self._scope_cache_lock:
+            cached = self._scope_cache.get(key)
+            if cached is not None:
+                self._scope_cache.move_to_end(key)
+                return cached
 
-        for chunk in chunks:
+        # --follow only works for one file; it keeps history from before a rename
+        follow = ("--follow",) if os.path.isfile(os.path.join(self.root, scope)) else ()
+        output = self.repo.git.log("--no-merges", *follow, LOG_FORMAT, "--numstat", "--", scope)
+        commits = self._parse_log(output, self._build_ref_map())
+
+        with self._scope_cache_lock:
+            self._scope_cache[key] = commits
+            while len(self._scope_cache) > SCOPE_CACHE_SIZE:
+                self._scope_cache.popitem(last=False)
+        return commits
+
+    def get_head_sha(self) -> str | None:
+        """
+        Return the HEAD commit sha, or None when the repo has no commits.
+        """
+        try:
+            return self.repo.git.rev_parse("--verify", "--quiet", "HEAD").strip() or None
+        except GitCommandError:
+            return None
+
+    def get_first_commit_date(self) -> datetime | None:
+        """
+        Date of the repo's oldest root commit, or None when there are no commits.
+        """
+        try:
+            output = self.repo.git.log("--max-parents=0", "--format=%at", "HEAD")
+        except GitCommandError:
+            return None
+        stamps = [int(line) for line in output.split() if line.isdigit()]
+        return commit_date(min(stamps)) if stamps else None
+
+    def get_tags(self) -> list[TagInfo]:
+        """
+        List tags with the date of the commit each one points at, oldest-first.
+        """
+        try:
+            output = self.repo.git.log("--no-walk", "--tags", "--format=%H%x09%at%x09%D")
+        except GitCommandError as e:
+            log.warning("failed to list tags: %s", e)
+            return []
+
+        tags = []
+        for line in output.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            hexsha, timestamp, decorations = parts
+            try:
+                date = commit_date(int(timestamp))
+            except ValueError:
+                continue
+            for deco in decorations.split(", "):
+                if deco.startswith("tag: "):
+                    # Tag names are only displayed; they may hold bidi or C1 characters
+                    tags.append(TagInfo(name=safe_text(deco[len("tag: "):]), hexsha=hexsha, date=date))
+
+        tags.sort(key=lambda t: (t.date, t.name))
+        return tags
+
+    def _normalize_scope(self, path: str) -> str:
+        """
+        Turn a scope path into a repo-relative pathspec ("." for the whole repo).
+        """
+        rel = self._to_relative(path).strip("/") if path else ""
+        return rel if rel and rel != "." else "."
+
+    @staticmethod
+    def _numstat_path(path: str) -> str:
+        """
+        Resolve a --numstat path to the file's new name when it was renamed.
+        """
+        if "{" in path and " => " in path:
+            path = RENAME_BRACES.sub(lambda m: m.group(2), path)
+            return re.sub(r"/{2,}", "/", path).strip("/")
+        if " => " in path:
+            return path.split(" => ", 1)[1]
+        return path
+
+    @staticmethod
+    def _parse_log(output: str, ref_map: dict[str, list[str]]) -> list[CommitInfo]:
+        """
+        Parse `git log` output written with LOG_FORMAT and --shortstat or --numstat.
+
+        With --numstat, totals are the sum of the per-file counts.
+
+        :param output: Raw git log output.
+        :param ref_map: sha -> ref names, used to fill CommitInfo.refs.
+        :returns: Commits in the order git printed them.
+        """
+        commits: list[CommitInfo] = []
+        if not output:
+            return commits
+
+        for chunk in output.split(RECORD_SEPARATOR):
             chunk = chunk.strip()
             if not chunk:
                 continue
@@ -212,28 +365,38 @@ class GitRepo:
             author = safe_text(lines[2].strip())
             subject = safe_text(lines[3].strip())
 
-            # Parse shortstat line (e.g. " 3 files changed, 10 insertions(+), 5 deletions(-)")
+            # Parse numstat lines ("10\t5\tpath", "-\t-\tbinary") or the
+            # shortstat line (" 3 files changed, 10 insertions(+), 5 deletions(-)")
             total_adds = 0
             total_dels = 0
+            files: list[tuple[str, int, int]] = []
             for line in lines[4:]:
-                if "insertion" in line or "deletion" in line:
+                if "\t" in line:
+                    adds_str, dels_str, path = line.split("\t", 2)
+                    adds = int(adds_str) if adds_str.isdigit() else 0
+                    dels = int(dels_str) if dels_str.isdigit() else 0
+                    files.append((GitRepo._numstat_path(path.strip()), adds, dels))
+                elif "insertion" in line or "deletion" in line:
                     add_match = re.search(r"(\d+) insertion", line)
                     del_match = re.search(r"(\d+) deletion", line)
                     if add_match:
                         total_adds = int(add_match.group(1))
                     if del_match:
                         total_dels = int(del_match.group(1))
+            if files:
+                total_adds = sum(f[1] for f in files)
+                total_dels = sum(f[2] for f in files)
 
-            refs_list = ref_map.get(hexsha, [])
             commits.append(
                 CommitInfo(
                     hexsha=hexsha,
-                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    date=commit_date(timestamp),
                     author=author,
                     message=subject,
                     additions=total_adds,
                     deletions=total_dels,
-                    refs=" ".join(refs_list),
+                    refs=" ".join(ref_map.get(hexsha, [])),
+                    files=files,
                 )
             )
         return commits
@@ -320,7 +483,7 @@ class GitRepo:
             elif raw_line.startswith("author-time "):
                 from datetime import datetime, timezone
                 ts = int(raw_line[12:])
-                dates[current_hash] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                dates[current_hash] = commit_date(ts).astimezone().strftime("%Y-%m-%d")
             elif not raw_line.startswith("author-") and not raw_line.startswith("committer") and not raw_line.startswith("summary ") and not raw_line.startswith("previous ") and not raw_line.startswith("filename ") and not raw_line.startswith("boundary"):
                 # Could be a commit line: hash orig_line final_line [num_lines]
                 parts = raw_line.split()

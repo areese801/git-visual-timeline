@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from gvt.git.repo import CommitInfo
-from gvt.widgets.timeline import TimelineWidget
+from gvt.widgets.timeline import TimelineWidget, parse_time_filter
 
 
 def _make_commit(idx=0, adds=10, dels=5, msg="test", date=None, is_wip=False):
@@ -325,3 +325,28 @@ class TestWIPCommit:
         c = _make_commit(idx=42)
         assert c.short_hash != "WIP"
         assert len(c.short_hash) == 7
+
+
+class TestParseTimeFilter:
+    NOW = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+
+    def test_weeks(self):
+        assert parse_time_filter("1w", self.NOW) == self.NOW - timedelta(weeks=1)
+
+    def test_months_are_30_days(self):
+        assert parse_time_filter("3m", self.NOW) == self.NOW - timedelta(days=90)
+
+    def test_years_are_365_days(self):
+        assert parse_time_filter("1y", self.NOW) == self.NOW - timedelta(days=365)
+
+    def test_absolute_date(self):
+        assert parse_time_filter("2025-06-01", self.NOW) == datetime(
+            2025, 6, 1, tzinfo=timezone.utc
+        )
+
+    def test_empty_means_no_cutoff(self):
+        assert parse_time_filter("", self.NOW) is None
+
+    def test_garbage_means_no_cutoff(self):
+        assert parse_time_filter("soon", self.NOW) is None
+        assert parse_time_filter("xm", self.NOW) is None

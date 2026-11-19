@@ -12,6 +12,8 @@ from textual.widget import Widget
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
+from gvt.textsafe import safe_text
+
 COLOR_DIM = "#565f89"
 COLOR_UNTRACKED = "#e0af68"
 
@@ -143,7 +145,7 @@ class FileTreeWidget(Widget, can_focus=True):
 
         for subdir in subdirs:
             # Display name is the last component
-            display_name = subdir.split("/")[-1]
+            display_name = safe_text(subdir.split("/")[-1])
             # Text, not str: a str label would be parsed as markup
             if is_untracked:
                 label = Text(display_name, style=COLOR_DIM)
@@ -153,7 +155,7 @@ class FileTreeWidget(Widget, can_focus=True):
             node.allow_expand = True
 
         for file_path in files:
-            display_name = file_path.split("/")[-1]
+            display_name = safe_text(file_path.split("/")[-1])
             if is_untracked:
                 label = Text(f"? {display_name}", style=COLOR_DIM)
             else:
@@ -216,6 +218,40 @@ class FileTreeWidget(Widget, can_focus=True):
                 self.post_message(FileSelected(node.data, tracked=tracked))
             elif node.allow_expand:
                 node.toggle()
+
+    def cursor_scope(self) -> tuple[str, bool] | None:
+        """
+        Scope for the highlighted node.
+
+        :returns: (path, is_file) for a tracked file or directory, (".", False)
+            for the root, or None for untracked nodes and when nothing is
+            highlighted.
+        """
+        if not self._tree or not self._tree.cursor_node:
+            return None
+        node = self._tree.cursor_node
+        if node is self._tree.root:
+            return ".", False
+        data = node.data
+        if (
+            not data
+            or data == "__untracked_header__"
+            or data.startswith("__ut__/")
+            or data in self._untracked_set
+        ):
+            return None
+        return data, not node.allow_expand
+
+    def cursor_is_untracked(self) -> bool:
+        """
+        True when the highlighted node is untracked (or the Untracked header).
+        """
+        if not self._tree or not self._tree.cursor_node:
+            return False
+        data = self._tree.cursor_node.data
+        return bool(data) and (
+            data == "__untracked_header__" or data.startswith("__ut__/") or data in self._untracked_set
+        )
 
     def action_toggle_node(self) -> None:
         if self._tree and self._tree.cursor_node:

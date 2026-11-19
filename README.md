@@ -22,6 +22,9 @@ gvt
 
 # Jump directly to a file
 gvt path/to/file.py
+
+# Print the Evolution exclusion rules for the current repo
+gvt --show-rules
 ```
 
 ## Layout
@@ -68,16 +71,40 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 
 ![Commit search](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-commit-search.gif)
 
+### Evolution
+
+Press `v` to see how code grew over time. It covers whatever is highlighted in the file tree (a file, a directory, or `.` for the whole repo), or the file open in the timeline.
+
+![Evolution](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-evolution.gif)
+
+- **Calendar** — a year of days shaded by commit count, like a GitHub contribution graph. `[` / `]` page back and forward a year.
+- **Frequency** — lines added (up) and deleted (down) across the project's whole history, from the repo's first commit to today, in daily bars when they fit and weekly, monthly or yearly bars otherwise. Press `m` for **volume** mode: the code's size over time above churn bars (lines added + deleted), like price and volume on a stock chart. The status line shows how much of the code changed in that period.
+- **Release tags** marked on both time axes.
+- **Jump to history** — press `Enter` on a day or week to list its commits, then open one in the timeline.
+
+`Tab` switches views, `u` widens the scope one folder at a time, and `Esc` goes back. An active time filter (`t`) carries over.
+
+#### Authored vs everything
+
+Lockfiles, generated snapshots, minified bundles and vendored code are committed on purpose but say little about how a project evolves. By default the Evolution views count only **authored** code:
+
+- `x` switches between authored and everything.
+- `X` opens the exclusion details: what was left out and by which rule, the largest files still counted (with a hint when a preset that's off would catch them), and how the rules were built.
+- `gvt --show-rules` prints the rules for the current repo.
+
+The defaults work without any setup. To change them, see [Configuring Evolution exclusions](#configuring-evolution-exclusions).
+
 ### All Features
 
+- **Evolution** (`v`) — contribution calendar, code frequency and volume charts for a file, directory or the whole repo, counting only authored code by default
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
 - **Diff search** (`/`) — regex search within the diff with `n`/`p` to navigate matches
-- **Commit search** (`c`) — fuzzy search all repo commits by message, branch, or author
+- **Commit search** (`c`) — fuzzy search all repo commits by message, branch, or author, then open a file at that commit
 - **Time filter** (`t`) — filter timeline by date range (1w, 1m, 3m, 6m, 1y, custom date)
 - **Contributor breakdown** (`B`) — who changed the file and how much
 - **WIP indicator** — hollow tick showing uncommitted changes
 - **Copy to clipboard** (`y`/`Y`) — short or full commit hash
-- **Open in editor** (`e`) — open current file in `$VISUAL`/`$EDITOR`/vim
+- **Open in editor** (`e`) — open current file in `$VISUAL`/`$EDITOR`/vim (arguments like `code --wait` work)
 - **Remember last file** — reopens to the last file you were viewing per repo
 - **tmux integration** — seamless pane switching at edges
 - **Preloaded diffs** — adjacent commits pre-cached for instant navigation
@@ -102,6 +129,7 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 | `n`/`p` | Next/prev diff hunk |
 | `y` / `Y` | Copy short/full commit hash |
 | `e` | Open file in editor |
+| `v` | Evolution (calendar, frequency) |
 | `?` | Help |
 | `q` | Quit (with confirmation) |
 | `qq` | Quit immediately |
@@ -124,6 +152,22 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 | `g`/`G` | Top/bottom |
 | `+`/`-` | More/less context lines |
 
+### Evolution (`v`)
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` / `1`-`2` | Switch view |
+| `h`/`l` | Move a week (calendar) or a period (frequency) |
+| `j`/`k` | Move a day (calendar) |
+| `[` / `]` | Page back/forward a year (calendar) |
+| `0`/`$` | First/last period (frequency) |
+| `m` | Toggle volume mode (frequency) |
+| `u` | Widen the scope: file → folder → … → whole repo |
+| `x` | Toggle authored only / everything |
+| `X` | Exclusion details: what's left out and why |
+| `Enter` | List commits, then open one in the timeline |
+| `Esc` | Back |
+
 ### Search Modals
 
 | Key | Action |
@@ -132,6 +176,137 @@ Press `c` to fuzzy search all repo commits by message, branch, or author.
 | `Ctrl+n` / `Ctrl+p` | Navigate results (alternative) |
 | `Enter` | Select |
 | `Esc` | Close |
+
+## Configuring Evolution exclusions
+
+The Evolution screen can leave out files that are committed but not written by hand, so its charts show how the code itself evolves. This section covers how those rules are decided and how to change them.
+
+### Quick start
+
+Most projects need nothing: lockfiles, minified bundles, generated snapshots and vendored code are excluded out of the box. To exclude more, add a `.gvt.toml` to the repo root:
+
+```toml
+[evolution]
+exclude = ["packages/core/src/data/**", "*.generated.ts"]
+```
+
+Then run `gvt --show-rules` (or press `X` in the Evolution screen) to confirm what's excluded.
+
+### Where rules come from
+
+Rules are collected from these layers, in this order. When several rules match a path, **the last one wins**, and a rule starting with `!` brings a path back in:
+
+1. **Built-in presets**: named groups of patterns (below). Four are on by default.
+2. **`.gitattributes`**: paths marked `linguist-generated`, `linguist-vendored` or `linguist-documentation` are excluded. These are the markers GitHub uses to hide generated code from language stats, so many repos already have them. A path that unsets one (`-linguist-generated` or `linguist-generated=false`) is re-included.
+3. **User config**: `~/.config/gvt/config.toml` applies to every repo you open. Set `$GVT_CONFIG` to use a different file.
+4. **Repo config**: `.gvt.toml` at the repo root. Commit it so everyone on the team sees the same numbers.
+
+Within the two config files, settings such as `default_mode` and `presets` are replaced by the later file (the repo wins). Lists of patterns (`exclude`, `ignore_files`) are added together, user first, then repo.
+
+### Settings
+
+Both config files use the same `[evolution]` table:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `default_mode` | `"authored"` | Mode the Evolution screen opens in: `"authored"` or `"everything"`. `x` switches at any time. |
+| `presets` | `["lockfiles", "minified", "generated", "vendored"]` | Which built-in presets are on. Use `[]` to turn them all off. |
+| `use_gitattributes` | `true` | Read linguist attributes from `.gitattributes`. |
+| `exclude` | `[]` | Extra patterns (see syntax below). |
+| `ignore_files` | `[]` | Files of patterns to read, one per line, e.g. `"tools/evolution-excludes.txt"` or `{ path = ".clocignore", syntax = "regex" }`. gvt reads only the files listed here. Paths are relative to the repo root; `~` works. Missing files are skipped quietly, so a user-level entry only applies to repos that have the file. |
+| `trust_repo_regex` | `false` | Use regex rules that come from files inside a repo (its `.gvt.toml`, or an ignore file stored in the repo such as `.clocignore`). Only read from your own config; see [Untrusted repositories](#untrusted-repositories). |
+| `ignore_revs` | `".git-blame-ignore-revs"` | File of commit SHAs to leave out entirely, such as repo-wide formatting passes. It's the same file `git blame` and GitHub use. Set to `""` to turn it off. |
+
+### Presets
+
+| Preset | On by default | Patterns |
+|---|---|---|
+| `lockfiles` | yes | `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`, `bun.lockb`, `uv.lock`, `poetry.lock`, `pdm.lock`, `Pipfile.lock`, `Cargo.lock`, `Gemfile.lock`, `composer.lock`, `mix.lock`, `flake.lock`, `go.sum` |
+| `minified` | yes | `*.min.js`, `*.min.css`, `*.map` |
+| `generated` | yes | `*.snap`, `*.tsbuildinfo`, `**/migrations/meta/*_snapshot.json`, `**/alembic/versions/` |
+| `vendored` | yes | `vendor/`, `third_party/` |
+| `docs` | no | `docs/`, `*.md`, `*.rst` |
+| `data` | no | `*.json`, `*.csv`, `*.svg` |
+
+### Pattern syntax
+
+Patterns work like `.gitignore` and match paths relative to the repo root:
+
+| Pattern | Matches |
+|---|---|
+| `yarn.lock` | A file or directory with that name at any depth |
+| `vendor/` | Everything under any directory named `vendor` |
+| `/docs` or `src/*.py` | Anchored at the repo root, because it contains a `/` |
+| `*` / `**` | Any characters within one path segment / across segments |
+| `?`, `[abc]`, `[!abc]` | One character, a set, a negated set |
+| `!docs/keep.md` | Re-include a path an earlier rule excluded |
+| `re:^src/legacy/` | A regular expression, searched anywhere in the path (from a repo file, only with `trust_repo_regex`) |
+
+Lines in `ignore_files` use the same syntax unless the entry says `syntax = "regex"`, in which case every line is a regular expression. Blank lines and lines starting with `#` are ignored.
+
+Globs are matched without regular expressions, so no single pattern can make matching blow up. Regular expressions use Python's `re` module, so they're only accepted from sources you trust (next section).
+
+### Untrusted repositories
+
+Exclusion rules can come from files inside the repo you're viewing: `.gvt.toml`, `.gitattributes`, and ignore files stored in the repo. When the repo came from someone else, gvt treats those files as untrusted:
+
+- **Regex rules from repo files are skipped** unless your own config sets `trust_repo_regex = true`. A crafted regex can take hours to match, and a repo can't grant itself trust. Skipped rules are listed as warnings in `X` and `gvt --show-rules`.
+- **`.gitattributes` patterns are always globs**, as in git.
+- **Paths in a repo's `.gvt.toml`** (`ignore_files`, `ignore_revs`) must stay inside the repo. Absolute paths, `~`, `..` and symlinks that lead outside are refused.
+- **Limits:** files over 256 KB are skipped; each config or rule file contributes at most 1,000 rules; patterns over 256 characters or 16 path segments are skipped; and paths longer than 1,024 characters or nested more than 64 folders deep are never excluded.
+- **A time budget:** if applying the rules to a scope takes more than 5 seconds, gvt shows everything for that scope and says so, instead of keeping you waiting. Leaving the Evolution screen (or widening it) also stops the work.
+- **Malformed config** (wrong types, deeply nested TOML) becomes a warning, never a crash.
+
+`trust_repo_regex` applies to every repo you open. Turn it on only if you mostly view your own repos, or keep your ignore files to globs.
+
+### What exclusions change
+
+- **Changed:** the calendar, frequency and volume charts and the summary line count only lines in files that aren't excluded.
+- **Dropped commits:** commits that touch only excluded files (a lockfile bump, a snapshot update) disappear from commit counts, the calendar and the commit list. The same goes for commits listed in `ignore_revs`.
+- **Not changed:** the main timeline, diffs, blame, commit search (`c`) and the file picker always show everything.
+
+### Checking your rules
+
+- **`X` in the Evolution screen** shows how many lines were excluded and what share of all changes that is, which files each rule caught, the largest files still counted, and each layer with whether it was found.
+- **`gvt --show-rules`** prints the merged rules and the config files it found, from the shell.
+- **Problems** in a config file appear as a warning when the Evolution screen opens and in both of the above. An unknown preset or an invalid regular expression is skipped on its own; a file that isn't valid TOML is skipped entirely. Everything else still applies.
+
+### Examples
+
+**Count docs and data too**, and keep one doc. Since `presets` replaces the defaults, list every preset you want:
+
+```toml
+[evolution]
+presets = ["lockfiles", "minified", "generated", "vendored", "docs", "data"]
+exclude = ["!docs/architecture.md"]
+```
+
+**Leave out a monorepo's database migrations and seed data:**
+
+```toml
+[evolution]
+exclude = ["migrations/", "packages/db/seed/**", "re:^apps/[^/]+/public/"]
+```
+
+**Reuse an existing ignore list**, here one of regular expressions kept in each repo. Regex rules from files inside a repo need `trust_repo_regex`, which only your own config can set:
+
+```toml
+# ~/.config/gvt/config.toml
+[evolution]
+trust_repo_regex = true
+ignore_files = [{ path = ".clocignore", syntax = "regex" }]
+```
+
+**Count everything by default**, but keep the rules one keypress away:
+
+```toml
+[evolution]
+default_mode = "everything"
+```
+
+### Why the numbers differ from cloc
+
+gvt counts every line added or removed in git history, including comments and blank lines, so a repo's authored size in gvt is usually higher than cloc's code-line count, even with the same files excluded.
 
 ## Requirements
 
