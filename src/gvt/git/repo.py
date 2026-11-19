@@ -304,7 +304,8 @@ class GitRepo:
                 continue
             for deco in decorations.split(", "):
                 if deco.startswith("tag: "):
-                    tags.append(TagInfo(name=deco[len("tag: "):], hexsha=hexsha, date=date))
+                    # Tag names are only displayed; they may hold bidi or C1 characters
+                    tags.append(TagInfo(name=safe_text(deco[len("tag: "):]), hexsha=hexsha, date=date))
 
         tags.sort(key=lambda t: (t.date, t.name))
         return tags

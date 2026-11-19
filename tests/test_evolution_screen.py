@@ -425,3 +425,50 @@ async def test_u_widens_scope_to_parent_folders(fixture_repo):
         await pilot.press("u")  # already the whole repo: stays put
         await _settle(app, pilot)
         assert screen.scope == "."
+
+
+async def test_widen_ignores_results_for_an_older_scope(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="src/app.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        stale = list(screen._all_commits)
+        # Called directly, so the new load can't land before the checks below
+        screen.action_widen()
+        assert screen._exclusions is None  # x and X wait for the new scope
+        assert screen._all_commits == []
+        # A late result for the file scope must not replace the folder's data
+        screen._apply_history("src/app.py", stale, [], None, None, None)
+        await _settle(app, pilot)
+        assert screen.scope == "src" and len(screen.commits) == 2
+
+
+async def test_scope_labels_and_details_show_names_safely(tmp_path):
+    import os as _os
+
+    from git import Repo as _Repo
+
+    repo_dir = str(tmp_path / "r")
+    _os.makedirs(repo_dir)
+    repo = _Repo.init(repo_dir)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@example.com")
+    path = "bidi‮txt.py"
+    for name in (path, "yarn.lock"):
+        with open(_os.path.join(repo_dir, name), "w") as f:
+            f.write("x\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+    repo.git.tag("v1‮rtl")
+
+    app = GVTApp(repo_path=repo_dir, initial_file=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        assert "‮" not in screen.scope_label
+        assert all("‮" not in t.name for t in screen._tags)
+        await pilot.press("u", "X")
+        await _settle(app, pilot)
+        text = app.screen.build_text().plain
+        assert "yarn.lock" in text and "‮" not in text

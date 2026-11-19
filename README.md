@@ -244,7 +244,7 @@ Patterns work like `.gitignore` and match paths relative to the repo root:
 
 Lines in `ignore_files` use the same syntax unless the entry says `syntax = "regex"`, in which case every line is a regular expression. Blank lines and lines starting with `#` are ignored.
 
-Globs are matched in linear time, so no glob can make gvt slow. Regular expressions use Python's `re` module, so they're only accepted from sources you trust (next section).
+Globs are matched without regular expressions, so no single pattern can make matching blow up. Regular expressions use Python's `re` module, so they're only accepted from sources you trust (next section).
 
 ### Untrusted repositories
 
@@ -253,7 +253,9 @@ Exclusion rules can come from files inside the repo you're viewing: `.gvt.toml`,
 - **Regex rules from repo files are skipped** unless your own config sets `trust_repo_regex = true`. A crafted regex can take hours to match, and a repo can't grant itself trust. Skipped rules are listed as warnings in `X` and `gvt --show-rules`.
 - **`.gitattributes` patterns are always globs**, as in git.
 - **Paths in a repo's `.gvt.toml`** (`ignore_files`, `ignore_revs`) must stay inside the repo. Absolute paths, `~`, `..` and symlinks that lead outside are refused.
-- **Limits:** files over 256 KB and patterns over 256 characters are skipped, and paths longer than 1,024 characters are never excluded.
+- **Limits:** files over 256 KB are skipped; each config or rule file contributes at most 1,000 rules; patterns over 256 characters or 16 path segments are skipped; and paths longer than 1,024 characters or nested more than 64 folders deep are never excluded.
+- **A time budget:** if applying the rules to a scope takes more than 5 seconds, gvt shows everything for that scope and says so, instead of keeping you waiting. Leaving the Evolution screen (or widening it) also stops the work.
+- **Malformed config** (wrong types, deeply nested TOML) becomes a warning, never a crash.
 
 `trust_repo_regex` applies to every repo you open. Turn it on only if you mostly view your own repos, or keep your ignore files to globs.
 

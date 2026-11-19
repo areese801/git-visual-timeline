@@ -709,7 +709,8 @@ class GVTApp(App):
         path, is_file = scope or (".", False)
         if path == ".":
             return ".", "whole repo", False, note
-        return path, path if is_file else path.rstrip("/") + "/", is_file, note
+        label = safe_text(path) if is_file else safe_text(path.rstrip("/")) + "/"
+        return path, label, is_file, note
 
     def action_evolution(self) -> None:
         scope, label, is_file, note = self._resolve_evolution_scope()

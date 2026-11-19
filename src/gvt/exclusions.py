@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -56,7 +57,12 @@ LINGUIST_ATTRIBUTES = ("linguist-generated", "linguist-vendored", "linguist-docu
 
 # Limits that keep rules from an untrusted repo cheap to load and match
 MAX_PATTERN_LENGTH = 256
+MAX_PATTERN_SEGMENTS = 16
+MAX_RULES_PER_SOURCE = 1000
 MAX_MATCH_PATH = 1024  # longer paths are never matched (treated as kept)
+MAX_MATCH_DEPTH = 64  # nor are paths nested deeper than this
+# Total time apply() may spend matching before it gives up on exclusions
+MATCH_BUDGET_SECONDS = 5.0
 MAX_RULE_FILE_BYTES = 256_000
 
 
@@ -91,10 +97,10 @@ def _class_end(segment: str, start: int) -> int:
     """
     Index of the "]" closing a [class] that opens at `start`, or -1.
 
-    A "]" right after "[" or "[!" is a literal member of the class.
+    A "]" right after "[", "[!" or "[^" is a literal member of the class.
     """
     j = start + 1
-    if j < len(segment) and segment[j] == "!":
+    if j < len(segment) and segment[j] in "!^":
         j += 1
     if j < len(segment) and segment[j] == "]":
         j += 1
@@ -118,19 +124,21 @@ def _segment_tokens(segment: str) -> list[tuple[str, object]]:
         elif ch == "[" and _class_end(segment, i) != -1:
             end = _class_end(segment, i)
             body = segment[i + 1:end]
-            negate = body.startswith("!")
+            negate = body[:1] in ("!", "^")
             if negate:
                 body = body[1:]
-            chars: set[str] = set()
+            # Ranges stay as (low, high) pairs: expanding [\x00-\U0010ffff]
+            # into a set would cost hundreds of MB
+            ranges: list[tuple[str, str]] = []
             j = 0
             while j < len(body):
                 if j + 2 < len(body) and body[j + 1] == "-":
-                    chars.update(chr(c) for c in range(ord(body[j]), ord(body[j + 2]) + 1))
+                    ranges.append((body[j], body[j + 2]))
                     j += 3
                 else:
-                    chars.add(body[j])
+                    ranges.append((body[j], body[j]))
                     j += 1
-            tokens.append(("class", (frozenset(chars), negate)))
+            tokens.append(("class", (tuple(ranges), negate)))
             i = end
         else:
             tokens.append(("lit", ch))
@@ -144,8 +152,8 @@ def _token_matches(token: tuple[str, object], ch: str) -> bool:
         return True
     if kind == "lit":
         return ch == value
-    chars, negate = value  # class
-    return (ch in chars) != negate
+    ranges, negate = value  # class
+    return any(lo <= ch <= hi for lo, hi in ranges) != negate
 
 
 def _wildcard_match(tokens: list, items: list, is_star, item_matches) -> bool:
@@ -191,7 +199,19 @@ class Glob:
         dir_only = pattern.endswith("/")
         body = pattern.rstrip("/")
         anchored = "/" in body
-        segments = [seg for seg in body.lstrip("/").split("/") if seg]
+        segments = []
+        for seg in body.lstrip("/").split("/"):
+            # Empty segments are skipped and repeated "**" collapses into one
+            if seg and not (seg == _ANY_SEGMENTS and segments and segments[-1] == _ANY_SEGMENTS):
+                segments.append(seg)
+        if not segments:
+            raise ValueError("empty pattern")
+        if len(segments) > MAX_PATTERN_SEGMENTS:
+            raise ValueError(f"pattern has too many path segments (over {MAX_PATTERN_SEGMENTS})")
+        if segments[-1] == _ANY_SEGMENTS:
+            # "a/**" matches everything inside a, not a itself
+            segments.pop()
+            dir_only = True
         if not anchored:
             segments.insert(0, _ANY_SEGMENTS)
         # A directory-only pattern needs at least one segment beneath it
@@ -206,15 +226,27 @@ class Glob:
                 tokens.append(_segment_tokens(seg))
         self.tokens = tokens
         self.pattern = pattern
+        # (token position, segment) -> matched; folder names repeat a lot
+        self._segment_cache: dict[tuple[int, str], bool] = {}
+
+    def _segment_matches(self, position: int, segment: str) -> bool:
+        key = (position, segment)
+        cached = self._segment_cache.get(key)
+        if cached is None:
+            if len(self._segment_cache) > 50_000:
+                self._segment_cache.clear()
+            token = self.tokens[position]
+            cached = _wildcard_match(token, list(segment), lambda t: t[0] == "star", _token_matches)
+            self._segment_cache[key] = cached
+        return cached
 
     def match(self, path: str) -> bool:
+        positions = list(range(len(self.tokens)))
         return _wildcard_match(
-            self.tokens,
+            positions,
             path.split("/"),
-            lambda token: token is _ANY_SEGMENTS,
-            lambda token, segment: _wildcard_match(
-                token, list(segment), lambda t: t[0] == "star", _token_matches
-            ),
+            lambda position: self.tokens[position] is _ANY_SEGMENTS,
+            self._segment_matches,
         )
 
 
@@ -279,8 +311,12 @@ def parse_pattern(text: str, source: str, syntax: str = "glob", allow_regex: boo
     if allow_regex and line.startswith("re:"):
         regex = True
         line = line[3:]
+    if not line.strip("/"):
+        raise ValueError(f"empty pattern {text.strip()!r} in {source}")
     try:
         compiled = re.compile(line) if regex else compile_glob(line)
+    except ValueError as e:
+        raise ValueError(f"pattern {text.strip()!r} in {source}: {e}") from e
     except re.error as e:
         raise ValueError(f"bad pattern {text.strip()!r} in {source}: {e}") from e
     return Rule(
@@ -351,8 +387,11 @@ def _inside(root: str, path: Path | str) -> bool:
     """
     True when `path` (after following symlinks) is inside `root`.
     """
-    real_root = os.path.realpath(root)
-    return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+    try:
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+    except (ValueError, OSError):
+        return False
 
 
 def _read_small(path: Path, label: str, config: ExclusionConfig) -> str | None:
@@ -386,11 +425,27 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
         return
     try:
         data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as e:
-        config.warnings.append(f"couldn't read {label}: {e}")
+    except (tomllib.TOMLDecodeError, RecursionError) as e:
+        config.warnings.append(f"couldn't read {label}: {type(e).__name__}: {e}"[:200])
         return
     config.found.append(label)
     section = data.get("evolution", {})
+    if not isinstance(section, dict):
+        config.warnings.append(f"{label}: [evolution] must be a table; ignored")
+        return
+
+    def as_list(key: str) -> list:
+        value = section.get(key, [])
+        if isinstance(value, list):
+            return value
+        config.warnings.append(f"{label}: {key} must be a list; ignored")
+        return []
+
+    def clean_path(value: object, key: str) -> str | None:
+        if not isinstance(value, str) or "\x00" in value:
+            config.warnings.append(f"{label}: {key} must be a file path; ignored")
+            return None
+        return value
 
     mode = section.get("default_mode")
     if mode in ("authored", "everything"):
@@ -398,7 +453,7 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
     elif mode is not None:
         config.warnings.append(f"{label}: default_mode must be 'authored' or 'everything'")
 
-    if "presets" in section:
+    if "presets" in section and isinstance(section["presets"], list):
         presets = [str(p) for p in section["presets"]]
         for name in presets:
             if name not in PRESETS:
@@ -407,9 +462,14 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
 
     if "use_gitattributes" in section:
         config.use_gitattributes = bool(section["use_gitattributes"])
+    elif "presets" in section:
+        config.warnings.append(f"{label}: presets must be a list; ignored")
+
     if "ignore_revs" in section:
-        config.ignore_revs = str(section["ignore_revs"])
-        config.ignore_revs_source = label
+        revs = clean_path(section["ignore_revs"], "ignore_revs")
+        if revs is not None:
+            config.ignore_revs = revs
+            config.ignore_revs_source = label
     if "trust_repo_regex" in section:
         if repo_root is None:
             config.trust_repo_regex = bool(section["trust_repo_regex"])
@@ -419,14 +479,14 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
                 f"({config.user_label or '~/.config/gvt/config.toml'}); ignored"
             )
 
-    config.exclude += [(str(p), label) for p in section.get("exclude", [])]
-    for entry in section.get("ignore_files", []):
-        if isinstance(entry, str):
-            config.ignore_files.append((entry, "glob", label))
-        elif isinstance(entry, dict) and "path" in entry:
-            config.ignore_files.append((str(entry["path"]), str(entry.get("syntax", "glob")), label))
-        else:
-            config.warnings.append(f"{label}: ignore_files entries need a path")
+    config.exclude += [(str(p), label) for p in as_list("exclude")]
+    for entry in as_list("ignore_files"):
+        raw = entry.get("path") if isinstance(entry, dict) else entry
+        path = clean_path(raw, "ignore_files")
+        if path is None:
+            continue
+        syntax = str(entry.get("syntax", "glob")) if isinstance(entry, dict) else "glob"
+        config.ignore_files.append((path, syntax, label))
 
 
 def load_config(repo_root: str, user_config: Path | None = USER_CONFIG) -> ExclusionConfig:
@@ -477,6 +537,10 @@ class FilterResult:
     by_file: dict[str, tuple[int, str]] = field(default_factory=dict)
     # Kept path -> lines changed (for spotting noise the rules missed)
     kept_by_file: dict[str, int] = field(default_factory=dict)
+    # True when should_stop() ended filtering early
+    stopped: bool = False
+    # True when matching ran past MATCH_BUDGET_SECONDS and exclusions were dropped
+    over_budget: bool = False
 
 
 @dataclass
@@ -518,8 +582,16 @@ class Exclusions:
         rules: list[Rule] = []
         # Regex rules skipped because they come from inside an untrusted repo
         skipped_regex: Counter[str] = Counter()
+        per_source: Counter[str] = Counter()
 
         def add(text: str, source: str, syntax: str = "glob", from_repo: bool = False) -> None:
+            if per_source[source] >= MAX_RULES_PER_SOURCE:
+                if per_source[source] == MAX_RULES_PER_SOURCE:
+                    config.warnings.append(
+                        f"{source}: only the first {MAX_RULES_PER_SOURCE} rules are used"
+                    )
+                    per_source[source] += 1
+                return
             try:
                 rule = parse_pattern(text, source, syntax)
             except ValueError as e:
@@ -530,6 +602,7 @@ class Exclusions:
             if rule.regex and from_repo and not config.trust_repo_regex:
                 skipped_regex[source] += 1
                 return
+            per_source[source] += 1
             rules.append(rule)
 
         layers: list[LayerStatus] = []
@@ -582,7 +655,8 @@ class Exclusions:
                     continue
                 file = _resolve(repo_root, path)
                 name = f"{path} (listed in {label})"
-                outside = os.path.isabs(os.path.expanduser(path)) or not _inside(repo_root, file)
+                absolute = os.path.isabs(os.path.expanduser(path))
+                outside = absolute or not _inside(repo_root, file)
                 if from_repo and (path.startswith("~") or outside):
                     config.warnings.append(f"{label}: ignore file {path} is outside the repo; ignored")
                     layers.append(LayerStatus(name, "outside the repo; ignored", False))
@@ -596,8 +670,9 @@ class Exclusions:
                     continue
                 before, skipped_before = len(rules), skipped_regex[path]
                 for line in text.splitlines():
-                    # A file inside the repo is repo-controlled, whoever listed it
-                    add(line, path, syntax, from_repo=not outside)
+                    # A relative path names a file in the repo (even if it's a
+                    # symlink pointing elsewhere), so its content is the repo's
+                    add(line, path, syntax, from_repo=from_repo or not absolute)
                 added, skipped = len(rules) - before, skipped_regex[path] - skipped_before
                 detail = _count(added, f"{syntax} pattern")
                 if skipped:
@@ -635,26 +710,27 @@ class Exclusions:
         """
         The last rule matching `path` (it may be a re-include), or None.
         """
-        if len(path) > MAX_MATCH_PATH:
+        if len(path) > MAX_MATCH_PATH or path.count("/") >= MAX_MATCH_DEPTH:
             return None
         if path not in self._verdicts:
-            match = None
-            for rule in self.rules:
-                if rule.matches(path):
-                    match = rule
-            self._verdicts[path] = match
+            # The last matching rule wins, so check from the end and stop early
+            self._verdicts[path] = next((r for r in reversed(self.rules) if r.matches(path)), None)
         return self._verdicts[path]
 
     def excludes(self, path: str) -> bool:
         rule = self.rule_for(path)
         return rule is not None and not rule.negate
 
-    def apply(self, commits: list[CommitInfo]) -> FilterResult:
+    def apply(self, commits: list[CommitInfo], should_stop=None) -> FilterResult:
         """
         Drop excluded files' lines from each commit (new CommitInfo objects).
 
         Commits listed in the ignore-revs file, or whose every file is excluded,
         are dropped entirely.
+
+        :param should_stop: Optional callable checked every few hundred commits;
+            when it returns True, filtering stops and the result is marked
+            `stopped` (used when the user leaves the screen mid-load).
         """
         result = FilterResult(commits=[])
         by_rule: Counter[str] = Counter()
@@ -663,7 +739,27 @@ class Exclusions:
         kept_by_file: Counter[str] = Counter()
         file_rule: dict[str, str] = {}
         ignored = 0
+        deadline = time.monotonic() + MATCH_BUDGET_SECONDS
+        checks = 0
         for commit in commits:
+            checks += 1 + len(commit.files)
+            if checks >= 8:
+                checks = 0
+                if should_stop is not None and should_stop():
+                    result.stopped = True
+                    break
+                if time.monotonic() > deadline:
+                    # Rules this expensive come from a hostile or pathological
+                    # repo: show everything rather than keep the user waiting
+                    self.config.warnings.append(
+                        f"exclusion rules took over {MATCH_BUDGET_SECONDS:.0f} s to apply; "
+                        "showing everything instead"
+                    )
+                    return FilterResult(
+                        commits=list(commits),
+                        total_lines=sum(c.additions + c.deletions for c in commits),
+                        over_budget=True,
+                    )
             result.total_lines += commit.additions + commit.deletions
             if commit.hexsha in self.ignore_revs:
                 lines = commit.additions + commit.deletions
@@ -706,7 +802,7 @@ class Exclusions:
         if ignored:
             lines = by_rule.pop(self.config.ignore_revs)
             noun = "commit" if ignored == 1 else "commits"
-            by_rule[f"{self.config.ignore_revs}  {ignored} {noun}"] = lines
+            by_rule[safe_text(f"{self.config.ignore_revs}  {ignored} {noun}")] = lines
         result.by_rule = dict(by_rule)
         result.rule_files = {label: len(paths) for label, paths in rule_files.items()}
         result.by_file = {path: (lines, file_rule[path]) for path, lines in by_file.items()}
@@ -738,7 +834,7 @@ def describe(exclusions: Exclusions) -> str:
         f".gitattributes linguist rules: {'on' if config.use_gitattributes else 'off'}",
         f"regex rules from repo files: {'trusted' if config.trust_repo_regex else 'skipped (trust_repo_regex is off)'}",
         f"config files: {', '.join(config.found) or '(none found)'}",
-        f"ignored commits: {len(exclusions.ignore_revs)} from {config.ignore_revs or '(disabled)'}",
+        safe_text(f"ignored commits: {len(exclusions.ignore_revs)} from {config.ignore_revs or '(disabled)'}"),
         "",
         "rules (last match wins, ! re-includes):",
     ]

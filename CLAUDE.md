@@ -149,7 +149,19 @@ reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
     can't set it. `.gitattributes` is always glob-only.
   - Paths from the repo layer must resolve inside the repo (`_inside`),
     including through symlinks, and file reads are capped
-    (`MAX_RULE_FILE_BYTES`). Patterns and matched paths have length caps.
+    (`MAX_RULE_FILE_BYTES`). Patterns (`MAX_PATTERN_LENGTH`,
+    `MAX_PATTERN_SEGMENTS`), rules per source (`MAX_RULES_PER_SOURCE`) and
+    matched paths (`MAX_MATCH_PATH`) are capped. Character-class ranges stay
+    as (low, high) pairs; never expand them into sets.
+  - `rule_for` scans rules newest-first and stops at the first match (same
+    result as "last match wins", much cheaper). `Glob` caches per-segment
+    results. `apply(should_stop=...)` lets the screen's worker stop when it's
+    cancelled, and `apply` gives up on exclusions (`over_budget`, show
+    everything) after `MATCH_BUDGET_SECONDS`, so the worst case is bounded.
+  - Config values are type-checked in `_read_layer`; malformed config becomes
+    a warning and never raises.
+- `EvolutionScreen._apply_history` drops results whose scope no longer
+  matches `self.scope`: a slow load can finish after `u` widened the scope.
 - **When you change `PRESETS`, update the presets table in README.md.**
   `test_readme_lists_every_preset_pattern` fails if they drift.
 

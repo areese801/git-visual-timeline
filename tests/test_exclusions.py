@@ -468,3 +468,127 @@ class TestUntrustedRepoRules:
         exclusions = Exclusions.load(str(repo), user_config=None)
         assert not exclusions.excludes("a.py")
         assert any("too large" in w for w in exclusions.config.warnings)
+
+
+class TestHostileRuleFiles:
+    """
+    Second review round: inputs that could still stall, crash or leak.
+    """
+
+    def test_full_unicode_ranges_are_cheap(self):
+        import time
+        import tracemalloc
+
+        tracemalloc.start()
+        start = time.time()
+        rule = parse_pattern("[\x00-\U0010ffff]" * 4, "x")
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert time.time() - start < 0.1 and peak < 5_000_000
+        assert rule.matches("abcd") and not rule.matches("abc")
+
+    def test_caret_negates_a_class_like_gitignore(self):
+        assert compile_glob("[^ab].txt").match("c.txt")
+        assert not compile_glob("[^ab].txt").match("a.txt")
+
+    def test_empty_patterns_are_rejected(self):
+        for text in ("/", "!", "!/"):
+            with pytest.raises(ValueError, match="empty"):
+                parse_pattern(text, "x")
+
+    def test_trailing_double_star_needs_something_beneath(self):
+        assert compile_glob("a/**").match("a/b")
+        assert not compile_glob("a/**").match("a")
+
+    def test_too_many_pattern_segments_are_rejected(self):
+        with pytest.raises(ValueError, match="too many"):
+            parse_pattern("**/" + "a/" * 40 + "b", "x")
+
+    def test_rules_per_source_are_capped(self, tmp_path):
+        from gvt.exclusions import MAX_RULES_PER_SOURCE
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "many.txt").write_text("".join(f"f{i}.txt\n" for i in range(MAX_RULES_PER_SOURCE + 50)))
+        (repo / ".gvt.toml").write_text('[evolution]\nignore_files = ["many.txt"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert sum(1 for r in exclusions.rules if r.source == "many.txt") == MAX_RULES_PER_SOURCE
+        assert any("only the first" in w for w in exclusions.config.warnings)
+
+    def test_apply_stops_when_asked(self, tmp_path):
+        exclusions = Exclusions.load(str(tmp_path), user_config=None)
+        commits = [_commit(str(i), [("a.py", 1, 0)]) for i in range(5000)]
+        calls = []
+
+        def should_stop():
+            calls.append(1)
+            return True
+
+        result = exclusions.apply(commits, should_stop=should_stop)
+        assert calls and result.stopped
+        assert len(result.commits) < len(commits)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "evolution = 1\n",
+            "[evolution]\nexclude = 5\n",
+            "[evolution]\npresets = 5\n",
+            "[evolution]\nignore_files = 5\n",
+            "[evolution]\nignore_revs = 5\n",
+            '[evolution]\nignore_revs = "a\\u0000b"\n',
+            '[evolution]\nignore_files = ["a\\u0000b"]\n',
+            "x = " + "[" * 50000 + "]" * 50000 + "\n",
+        ],
+    )
+    def test_malformed_repo_config_becomes_a_warning(self, tmp_path, text):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".gvt.toml").write_text(text)
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert exclusions.config.warnings
+        describe(exclusions)  # must not raise either
+
+    def test_ignore_revs_label_is_printed_safely(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".gvt.toml").write_text('[evolution]\nignore_revs = "x\\u001b]0;T\\u0007"\n')
+        text = describe(Exclusions.load(str(repo), user_config=None))
+        assert "\x1b" not in text and "\x07" not in text
+
+    def test_user_listed_relative_ignore_file_counts_as_repo_content(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside-rules.txt"
+        outside.write_text("^seed/\n")
+        (repo / ".clocignore").symlink_to(outside)
+        user = tmp_path / "user.toml"
+        user.write_text('[evolution]\nignore_files = [{ path = ".clocignore", syntax = "regex" }]\n')
+        # Listed relative to the repo, so it's repo content even though it
+        # resolves outside: regex needs trust
+        assert not Exclusions.load(str(repo), user_config=user).excludes("seed/x.json")
+
+
+def test_expensive_rules_fall_back_to_everything_within_the_budget(tmp_path, monkeypatch):
+    import time
+
+    import gvt.exclusions as exclusions_module
+
+    monkeypatch.setattr(exclusions_module, "MATCH_BUDGET_SECONDS", 0.5)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "big.txt").write_text(("**/" + "a/" * 14 + "b\n") * 3000)
+    (repo / ".gvt.toml").write_text('[evolution]\nignore_files = ["big.txt"]\n')
+    exclusions = Exclusions.load(str(repo), user_config=None)
+    commits = [_commit(str(i), [("/".join(["a"] * 63) + str(i), 1, 0)]) for i in range(500)]
+    start = time.time()
+    result = exclusions.apply(commits)
+    assert time.time() - start < 2.0
+    assert result.over_budget and len(result.commits) == 500
+    assert any("showing everything" in w for w in exclusions.config.warnings)
+
+
+def test_deep_paths_are_never_matched(tmp_path):
+    exclusions = Exclusions.load(str(tmp_path), user_config=None)
+    assert exclusions.excludes("/".join(["d"] * 10) + "/yarn.lock")
+    assert not exclusions.excludes("/".join(["d"] * 70) + "/yarn.lock")

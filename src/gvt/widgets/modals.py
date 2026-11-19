@@ -814,7 +814,8 @@ class ExclusionDetailsModal(ModalScreen):
             if files:
                 text.append(f"{len(files):>4} {'file ' if len(files) == 1 else 'files'}  ", style=COLOR_DIM)
             text.append(f"{label}\n", style=f"bold {COLOR_TEXT}")
-            for path, file_lines in files[: self.FILES_PER_RULE]:
+            for raw_path, file_lines in files[: self.FILES_PER_RULE]:
+                path = safe_text(raw_path)
                 shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
                 text.append(f"  {file_lines:>15,}  ", style=COLOR_DIM)
                 text.append(f"{shown}\n", style=COLOR_TEXT)
@@ -830,11 +831,12 @@ class ExclusionDetailsModal(ModalScreen):
             self._heading(
                 text, "Largest files still counted", "noise the rules missed?  → a preset that's off would exclude it"
             )
-            for path, lines in kept:
+            for raw_path, lines in kept:
+                path = safe_text(raw_path)
                 shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
                 text.append(f"  {lines:>9,} lines  ", style=COLOR_AMBER)
                 text.append(shown, style=COLOR_TEXT)
-                preset = self.exclusions.suggest_preset(path)
+                preset = self.exclusions.suggest_preset(raw_path)
                 if preset:
                     text.append(f"  → '{preset}' preset", style=COLOR_DIM)
                 text.append("\n")

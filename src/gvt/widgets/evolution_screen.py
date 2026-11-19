@@ -9,7 +9,6 @@ from datetime import datetime, timezone, tzinfo
 from functools import partial
 from pathlib import Path
 
-from git.exc import GitCommandError
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -17,6 +16,7 @@ from textual.containers import Container
 from textual.markup import escape
 from textual.screen import Screen
 from textual.widgets import Static, TabbedContent, TabPane, Tabs
+from textual.worker import get_current_worker
 
 from gvt.evolution import bucket_by_day, local_day
 from gvt.exclusions import USER_CONFIG, Exclusions, FilterResult
@@ -206,6 +206,7 @@ class EvolutionScreen(Screen):
         self._exclusions: Exclusions | None = None
         # The config's default mode applies once; x and widening keep the choice
         self._mode_chosen = False
+        self._warned = False
         self._filtered: FilterResult | None = None
 
     def compose(self) -> ComposeResult:
@@ -235,17 +236,26 @@ class EvolutionScreen(Screen):
 
     @work(thread=True, exclusive=True, group="evolution-load", exit_on_error=False)
     def _load_history(self) -> None:
+        # Results are tagged with the scope they were loaded for: a slow load can
+        # finish after the user has widened the scope (thread workers can't be
+        # interrupted, only asked to stop)
+        scope = self.scope
+        worker = get_current_worker()
         try:
-            commits = self.git_repo.get_scope_commits(self.scope)
+            commits = self.git_repo.get_scope_commits(scope)
             tags = self.git_repo.get_tags()
             first_commit = self.git_repo.get_first_commit_date()
             exclusions = Exclusions.load(self.git_repo.root, self.user_config)
-        except (GitCommandError, OSError, ValueError) as e:
-            log.warning("evolution history for %s failed: %s", self.scope, e)
+            filtered = exclusions.apply(commits, should_stop=lambda: worker.is_cancelled)
+        except Exception as e:
+            # Last resort: whatever a repo contains, the screen must not hang on
+            # "Loading history…" with no explanation
+            log.exception("evolution history for %s failed: %s", scope, e)
             self.app.call_from_thread(self._show_message, "Couldn't read history (see log)")
             return
-        filtered = exclusions.apply(commits)
-        self.app.call_from_thread(self._apply_history, commits, tags, first_commit, exclusions, filtered)
+        if worker.is_cancelled:
+            return
+        self.app.call_from_thread(self._apply_history, scope, commits, tags, first_commit, exclusions, filtered)
 
     def _views(self) -> list[EvolutionView]:
         return list(self.query(EvolutionView))
@@ -258,13 +268,14 @@ class EvolutionScreen(Screen):
 
     def _apply_history(
         self,
+        scope: str,
         commits: list[CommitInfo],
         tags: list[TagInfo],
         first_commit: datetime | None,
         exclusions: Exclusions,
         filtered: FilterResult,
     ) -> None:
-        if not self.is_attached:
+        if not self.is_attached or scope != self.scope:
             return
         self._all_commits = commits
         self._tags = tags
@@ -274,10 +285,21 @@ class EvolutionScreen(Screen):
         if not self._mode_chosen:
             self.mode = exclusions.config.default_mode
             self._mode_chosen = True
-        for warning in exclusions.config.warnings:
+        if filtered.over_budget and self._warned:
+            # Hitting the time budget depends on the scope, so say so each time
             self.notify(
-                safe_text(warning), title="Exclusion rules", severity="warning", timeout=6, markup=False
+                "Exclusion rules were too slow for this scope; showing everything",
+                severity="warning",
+                timeout=6,
+                markup=False,
             )
+        if not self._warned:
+            # The rules don't change when widening, so warn once per screen
+            self._warned = True
+            for warning in exclusions.config.warnings:
+                self.notify(
+                    safe_text(warning), title="Exclusion rules", severity="warning", timeout=6, markup=False
+                )
         self._show()
 
     def _mode_text(self) -> Text:
@@ -286,7 +308,9 @@ class EvolutionScreen(Screen):
         if self.mode == "authored" and self._filtered is not None:
             excluded = self._filtered.excluded_lines
             text.append("  ·  ", style="#565f89")
-            if excluded:
+            if self._filtered.over_budget:
+                text.append("exclusions skipped: rules too slow (see X)", style="#e0af68")
+            elif excluded:
                 text.append(f"{compact(excluded)} lines excluded", style="#565f89")
             else:
                 text.append("nothing excluded", style="#565f89")
@@ -343,7 +367,12 @@ class EvolutionScreen(Screen):
             return
         self.scope = posixpath.dirname(self.scope.rstrip("/")) or "."
         self.scope_is_file = False
-        self.scope_label = "whole repo" if self.scope == "." else self.scope + "/"
+        self.scope_label = "whole repo" if self.scope == "." else safe_text(self.scope) + "/"
+        # Until the new scope loads, x and X have nothing current to act on
+        self._exclusions = None
+        self._filtered = None
+        self._all_commits = []
+        self.commits = []
         self._set_title()
         self.query_one("#evolution-summary", Static).update("")
         self._show_message("Loading history…")
