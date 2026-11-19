@@ -272,7 +272,7 @@ class FileSearchModal(ModalScreen):
             else:
                 line.append("  ")
 
-            line.append(file_path, style=COLOR_TEXT)
+            line.append(safe_text(file_path), style=COLOR_TEXT)
 
             label = Static(line)
             if is_selected:
@@ -418,7 +418,7 @@ class CommitFilesModal(ModalScreen):
             else:
                 line.append("  ")
 
-            line.append(file_path, style=COLOR_TEXT if not is_selected else f"bold {COLOR_TEXT}")
+            line.append(safe_text(file_path), style=COLOR_TEXT if not is_selected else f"bold {COLOR_TEXT}")
             line.append("  ", style="")
             line.append(f"+{adds}", style=COLOR_GREEN)
             line.append(f" -{dels}", style=COLOR_RED)

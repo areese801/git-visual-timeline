@@ -23,6 +23,7 @@ from textual.widget import Widget
 from gvt.git.cache import DiffCache
 from gvt.git.repo import CommitInfo, GitRepo
 from gvt.logging_setup import get_logger
+from gvt.textsafe import safe_text
 
 log = get_logger(__name__)
 from gvt.widgets.changed_files import ChangedFilesWidget, ChangedFileSelected, ChangedFileHighlighted
@@ -200,7 +201,7 @@ class GVTApp(App):
 
     @on(ChangedFileHighlighted)
     def on_changed_file_highlighted(self, event: ChangedFileHighlighted) -> None:
-        self.query_one("#changed-files-pane", Container).border_title = f"[5] {escape(event.path)}"
+        self.query_one("#changed-files-pane", Container).border_title = f"[5] {escape(safe_text(event.path))}"
 
     def _load_untracked_file(self, file_path: str) -> None:
         """Show an untracked file as a read-only preview."""
@@ -240,7 +241,7 @@ class GVTApp(App):
         _, branch = self.git_repo.get_branches()
         status_bar.update_info(file_path=file_path, branch=branch)
         self.query_one("#timeline-pane", Container).border_title = "[2] Timeline"
-        self.query_one("#diff-pane", Container).border_title = f"[4] Preview {escape(file_path)} (untracked)"
+        self.query_one("#diff-pane", Container).border_title = f"[4] Preview {escape(safe_text(file_path))} (untracked)"
         self.query_one("#changed-files-pane", Container).border_title = "[5] Changed"
 
         # Focus the diff pane so user can scroll the preview
@@ -358,10 +359,10 @@ class GVTApp(App):
         # Update dynamic pane titles
         current_commit = self.current_commits[timeline.cursor]
         if current_commit.is_wip:
-            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(file_path)} (WIP)"
+            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(safe_text(file_path))} (WIP)"
             self.query_one("#changed-files-pane", Container).border_title = "[5] Uncommitted changes"
         else:
-            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(file_path)}"
+            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(safe_text(file_path))}"
             self.query_one("#changed-files-pane", Container).border_title = f"[5] Also changed on {current_commit.short_hash}"
 
         self._load_diff(file_path, left_idx, right_idx)

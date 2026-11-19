@@ -7,6 +7,8 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.scroll_view import ScrollView
 
+from gvt.textsafe import safe_text
+
 COLOR_ACCENT = "#7aa2f7"
 COLOR_TEXT = "#c0caf5"
 COLOR_DIM = "#565f89"
@@ -70,7 +72,8 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
             self._lines.append(Text("No files changed", style=COLOR_DIM))
             return
 
-        for idx, (file_path, adds, dels) in enumerate(self.files):
+        for idx, (raw_path, adds, dels) in enumerate(self.files):
+            file_path = safe_text(raw_path)
             line = Text()
             is_selected = idx == self.selected_idx
 
