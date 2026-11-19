@@ -82,7 +82,7 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 - **Release tags** marked on both time axes.
 - **Jump to history** — press `Enter` on a day or week to list its commits, then open one in the timeline.
 
-`Tab` switches views and `Esc` goes back. An active time filter (`t`) carries over.
+`Tab` switches views, `u` widens the scope one folder at a time, and `Esc` goes back. An active time filter (`t`) carries over.
 
 #### Authored vs everything
 
@@ -162,6 +162,7 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 | `[` / `]` | Page back/forward a year (calendar) |
 | `0`/`$` | First/last period (frequency) |
 | `m` | Toggle volume mode (frequency) |
+| `u` | Widen the scope: file → folder → … → whole repo |
 | `x` | Toggle authored only / everything |
 | `X` | Exclusion details: what's left out and why |
 | `Enter` | List commits, then open one in the timeline |

@@ -336,7 +336,7 @@ class CommitDetailPopup(ModalScreen):
         text.append("Author: ", style=f"bold {COLOR_DIM}")
         text.append(f"{c.author}\n", style=COLOR_TEXT)
         text.append("Date:   ", style=f"bold {COLOR_DIM}")
-        text.append(f"{c.date.strftime('%Y-%m-%d %H:%M:%S %Z')}\n", style=COLOR_TEXT)
+        text.append(f"{c.date.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n", style=COLOR_TEXT)
         text.append("Stats:  ", style=f"bold {COLOR_DIM}")
         text.append(f"+{c.additions}", style=COLOR_GREEN)
         text.append(f" -{c.deletions}\n\n", style=COLOR_RED)
@@ -683,6 +683,7 @@ class HelpModal(ModalScreen):
                 ("[ / ]", "Page back/forward a year (calendar)"),
                 ("0/$", "First/last period (frequency)"),
                 ("m", "Volume mode: size over time + churn (frequency)"),
+                ("u", "Widen scope to the parent folder"),
                 ("x", "Toggle authored only / everything"),
                 ("X", "Exclusion details: what's left out and why"),
                 ("Enter", "List commits → open in timeline"),

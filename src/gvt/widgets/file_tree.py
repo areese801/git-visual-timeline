@@ -240,6 +240,17 @@ class FileTreeWidget(Widget, can_focus=True):
             return None
         return data, not node.allow_expand
 
+    def cursor_is_untracked(self) -> bool:
+        """
+        True when the highlighted node is untracked (or the Untracked header).
+        """
+        if not self._tree or not self._tree.cursor_node:
+            return False
+        data = self._tree.cursor_node.data
+        return bool(data) and (
+            data == "__untracked_header__" or data.startswith("__ut__/") or data in self._untracked_set
+        )
+
     def action_toggle_node(self) -> None:
         if self._tree and self._tree.cursor_node:
             self._tree.cursor_node.toggle()

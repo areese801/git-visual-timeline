@@ -239,7 +239,9 @@ class GitRepo:
                 self._scope_cache.move_to_end(key)
                 return cached
 
-        output = self.repo.git.log("--no-merges", LOG_FORMAT, "--numstat", "--", scope)
+        # --follow only works for one file; it keeps history from before a rename
+        follow = ("--follow",) if os.path.isfile(os.path.join(self.root, scope)) else ()
+        output = self.repo.git.log("--no-merges", *follow, LOG_FORMAT, "--numstat", "--", scope)
         commits = self._parse_log(output, self._build_ref_map())
 
         with self._scope_cache_lock:
@@ -468,7 +470,7 @@ class GitRepo:
             elif raw_line.startswith("author-time "):
                 from datetime import datetime, timezone
                 ts = int(raw_line[12:])
-                dates[current_hash] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                dates[current_hash] = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d")
             elif not raw_line.startswith("author-") and not raw_line.startswith("committer") and not raw_line.startswith("summary ") and not raw_line.startswith("previous ") and not raw_line.startswith("filename ") and not raw_line.startswith("boundary"):
                 # Could be a commit line: hash orig_line final_line [num_lines]
                 parts = raw_line.split()

@@ -389,3 +389,39 @@ def test_legend_fits_narrow_terminals_and_keeps_key_actions():
     assert " 0/$ " not in narrow
     calendar = legend_text("calendar", 80).plain
     assert len(calendar) <= 80 and " X " in calendar and " [ ] " in calendar
+
+
+async def test_untracked_node_opens_whole_repo_with_a_note(fixture_repo, monkeypatch):
+    app = GVTApp(repo_path=fixture_repo)
+    notes = []
+    original = app.notify
+    monkeypatch.setattr(app, "notify", lambda msg, **k: notes.append(msg) or original(msg, **k))
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        tree = app.query_one(FileTreeWidget)._tree
+        while tree.cursor_node.data != "__untracked_header__":
+            await pilot.press("j")
+        screen = await _open_evolution(app, pilot)
+        assert screen.scope == "."
+        assert any("Untracked" in note for note in notes)
+
+
+async def test_u_widens_scope_to_parent_folders(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="src/app.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        assert (screen.scope, screen.scope_is_file) == ("src/app.py", True)
+        await pilot.press("x")  # switch to everything; widening keeps the mode
+        await pilot.press("u")
+        await _settle(app, pilot)
+        assert (screen.scope, screen.scope_label, screen.scope_is_file) == ("src", "src/", False)
+        assert "src/" in str(screen.query_one("#evolution-container").border_title)
+        assert screen.mode == "everything"
+        await pilot.press("u")
+        await _settle(app, pilot)
+        assert (screen.scope, screen.scope_label) == (".", "whole repo")
+        assert len(screen.commits) == 6
+        await pilot.press("u")  # already the whole repo: stays put
+        await _settle(app, pilot)
+        assert screen.scope == "."

@@ -4,6 +4,7 @@ Full-screen Evolution view: how a file, directory, or repo changed over time.
 
 from __future__ import annotations
 
+import posixpath
 from datetime import datetime, timezone, tzinfo
 from functools import partial
 from pathlib import Path
@@ -40,19 +41,21 @@ VIEWS = {
 # too narrow, the entries with the highest priority number are dropped first.
 LEGENDS = {
     "calendar": [
-        ("Tab", "views", 5),
+        ("Tab", "views", 6),
         ("h/j/k/l", "move", 3),
         ("[ ]", "year", 4),
+        ("u", "widen", 5),
         ("x", "authored/all", 1),
         ("X", "details", 2),
         ("Enter", "list", 2),
         ("Esc", "back", 1),
     ],
     "frequency": [
-        ("Tab", "views", 5),
+        ("Tab", "views", 6),
         ("h/l", "move", 3),
-        ("0/$", "ends", 6),
+        ("0/$", "ends", 7),
         ("m", "volume", 2),
+        ("u", "widen", 5),
         ("x", "authored/all", 1),
         ("X", "details", 2),
         ("Enter", "list", 2),
@@ -162,6 +165,7 @@ class EvolutionScreen(Screen):
         ("2", "show_view('frequency')", "Frequency"),
         ("x", "toggle_excludes", "Authored/everything"),
         ("X", "show_rules", "Exclusion rules"),
+        ("u", "widen", "Widen scope"),
     ]
 
     def __init__(
@@ -200,6 +204,8 @@ class EvolutionScreen(Screen):
         self._tags: list[TagInfo] = []
         self._first_commit: datetime | None = None
         self._exclusions: Exclusions | None = None
+        # The config's default mode applies once; x and widening keep the choice
+        self._mode_chosen = False
         self._filtered: FilterResult | None = None
 
     def compose(self) -> ComposeResult:
@@ -212,11 +218,14 @@ class EvolutionScreen(Screen):
                     yield FrequencyView(tz=self.tz, id="frequency-view")
         yield Static(legend_text("calendar"), id="evolution-legend")
 
-    def on_mount(self) -> None:
+    def _set_title(self) -> None:
         title = f"Evolution — {escape(self.scope_label)}"
         if self.time_filter:
             title += f" (since {self.time_filter})"
         self.query_one("#evolution-container", Container).border_title = title
+
+    def on_mount(self) -> None:
+        self._set_title()
         # Keep focus on the views so their keys work; Tab switches views instead
         self.query_one(Tabs).can_focus = False
         self._focus_active_view()
@@ -262,7 +271,9 @@ class EvolutionScreen(Screen):
         self._first_commit = first_commit
         self._exclusions = exclusions
         self._filtered = filtered
-        self.mode = exclusions.config.default_mode
+        if not self._mode_chosen:
+            self.mode = exclusions.config.default_mode
+            self._mode_chosen = True
         for warning in exclusions.config.warnings:
             self.notify(
                 safe_text(warning), title="Exclusion rules", severity="warning", timeout=6, markup=False
@@ -321,6 +332,22 @@ class EvolutionScreen(Screen):
         self.query_one(FrequencyView).history_start = history_start
         for view in self._views():
             view.set_data(commits, self._tags, base_size)
+
+    def action_widen(self) -> None:
+        """
+        Widen the scope one level: a file to its folder, a folder to its parent,
+        and finally the whole repo.
+        """
+        if self.scope == ".":
+            self.notify("Already showing the whole repo", timeout=2)
+            return
+        self.scope = posixpath.dirname(self.scope.rstrip("/")) or "."
+        self.scope_is_file = False
+        self.scope_label = "whole repo" if self.scope == "." else self.scope + "/"
+        self._set_title()
+        self.query_one("#evolution-summary", Static).update("")
+        self._show_message("Loading history…")
+        self._load_history()
 
     def action_toggle_excludes(self) -> None:
         if self._exclusions is None:

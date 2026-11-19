@@ -336,7 +336,7 @@ class GVTApp(App):
         if commit.is_wip:
             title = "WIP"
         else:
-            title = f"{commit.short_hash}  {commit.date.strftime('%Y-%m-%d')}  {commit.author}  +{commit.additions} -{commit.deletions}"
+            title = f"{commit.short_hash}  {commit.date.astimezone().strftime('%Y-%m-%d')}  {commit.author}  +{commit.additions} -{commit.deletions}"
         # Commit text comes from the repo: show it literally, not as markup
         self.notify(
             commit.message.strip(),
@@ -685,31 +685,36 @@ class GVTApp(App):
             return False
         return True
 
-    def _resolve_evolution_scope(self) -> tuple[str, str, bool]:
+    def _resolve_evolution_scope(self) -> tuple[str, str, bool, str | None]:
         """
         Pick what the Evolution screen covers.
 
         The highlighted file-tree node when the tree has focus, otherwise the
         file loaded in the timeline, otherwise the whole repo. Untracked nodes
-        fall back to the whole repo.
+        fall back to the whole repo, with a note saying why.
 
-        :returns: (scope path, label, is_file)
+        :returns: (scope path, label, is_file, note to show or None)
         """
         scope: tuple[str, bool] | None = None
+        note = None
         tree = self.query_one("#file-tree-widget", FileTreeWidget)
         if tree.has_focus_within:
             scope = tree.cursor_scope()
+            if scope is None and tree.cursor_is_untracked():
+                note = "Untracked files have no history yet, so this shows the whole repo."
         elif self.current_file and self.current_commits:
             scope = (self.current_file, True)
 
         path, is_file = scope or (".", False)
         if path == ".":
-            return ".", "whole repo", False
-        return path, path if is_file else path.rstrip("/") + "/", is_file
+            return ".", "whole repo", False, note
+        return path, path if is_file else path.rstrip("/") + "/", is_file, note
 
     def action_evolution(self) -> None:
-        scope, label, is_file = self._resolve_evolution_scope()
+        scope, label, is_file, note = self._resolve_evolution_scope()
         time_filter = self.query_one("#timeline-widget", TimelineWidget).time_filter
+        if note:
+            self.notify(note, timeout=4, markup=False)
 
         def on_result(result) -> None:
             if result is None:

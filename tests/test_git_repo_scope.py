@@ -172,3 +172,17 @@ def test_first_commit_date_empty_repo(tmp_path):
     repo_dir = str(tmp_path / "empty")
     Repo.init(repo_dir)
     assert GitRepo(repo_dir).get_first_commit_date() is None
+
+
+def test_file_scope_follows_renames(git_repo, fixture_repo):
+    repo = Repo(fixture_repo)
+    repo.index.move(["README.md", "GUIDE.md"])
+    repo.index.commit("Rename README to GUIDE")
+    messages = [c.message for c in git_repo.get_scope_commits("GUIDE.md")]
+    assert messages[0] == "Rename README to GUIDE"
+    assert "Add README" in messages  # from before the rename
+
+
+def test_directory_scope_does_not_use_follow(git_repo):
+    # --follow only works for a single file; a directory scope must still list everything
+    assert len(git_repo.get_scope_commits("src")) == 2
