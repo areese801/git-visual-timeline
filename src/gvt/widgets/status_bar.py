@@ -6,6 +6,8 @@ from rich.text import Text
 from textual.widget import Widget
 from textual.strip import Strip
 
+from gvt.textsafe import safe_text
+
 COLOR_BAR_BG = "#7aa2f7"
 COLOR_BAR_FG = "#1a1b26"
 
@@ -101,7 +103,7 @@ class GVTStatusBar(Widget):
         text.append(" gvt", style=f"bold on {COLOR_BAR_BG} {COLOR_BAR_FG}")
 
         if self.file_path:
-            text.append(f"  {self.file_path}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
+            text.append(f"  {safe_text(self.file_path)}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
 
         if self.commit_position:
             text.append(f"  [{self.commit_position}]", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")

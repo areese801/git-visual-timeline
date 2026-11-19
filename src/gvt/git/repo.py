@@ -25,6 +25,17 @@ SAFE_DIFF = ("--no-ext-diff", "--no-textconv")
 # Largest working-tree file shown as a preview
 MAX_PREVIEW_BYTES = 2_000_000
 
+# Commit timestamps are clamped to 1970..2100: a crafted date outside Python's
+# datetime range would otherwise crash parsing
+MAX_TIMESTAMP = 4_102_444_800  # 2100-01-01 UTC
+
+
+def commit_date(timestamp: int) -> datetime:
+    """
+    UTC datetime for a git timestamp, clamped to 1970-01-01..2100-01-01.
+    """
+    return datetime.fromtimestamp(max(0, min(timestamp, MAX_TIMESTAMP)), tz=timezone.utc)
+
 
 @dataclass
 class CommitInfo:
@@ -89,7 +100,8 @@ class GitRepo:
         for ref in refs:
             try:
                 sha = ref.commit.hexsha
-                ref_map.setdefault(sha, []).append(ref.name)
+                # Ref names may hold bidi or C1 characters; they're only displayed
+                ref_map.setdefault(sha, []).append(safe_text(ref.name))
             except (GitCommandError, AttributeError, ValueError) as e:
                 log.debug("skipping ref %s: %s", getattr(ref, "name", "?"), e)
         return ref_map
@@ -158,7 +170,7 @@ class GitRepo:
             commits.append(
                 CommitInfo(
                     hexsha=hexsha,
-                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    date=commit_date(timestamp),
                     author=author,
                     message=subject,
                     additions=additions,
@@ -228,7 +240,7 @@ class GitRepo:
             commits.append(
                 CommitInfo(
                     hexsha=hexsha,
-                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc),
+                    date=commit_date(timestamp),
                     author=author,
                     message=subject,
                     additions=total_adds,
@@ -320,7 +332,7 @@ class GitRepo:
             elif raw_line.startswith("author-time "):
                 from datetime import datetime, timezone
                 ts = int(raw_line[12:])
-                dates[current_hash] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                dates[current_hash] = commit_date(ts).strftime("%Y-%m-%d")
             elif not raw_line.startswith("author-") and not raw_line.startswith("committer") and not raw_line.startswith("summary ") and not raw_line.startswith("previous ") and not raw_line.startswith("filename ") and not raw_line.startswith("boundary"):
                 # Could be a commit line: hash orig_line final_line [num_lines]
                 parts = raw_line.split()
