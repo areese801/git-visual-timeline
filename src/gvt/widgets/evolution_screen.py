@@ -15,6 +15,7 @@ from textual.app import ComposeResult
 from textual.containers import Container
 from textual.markup import escape
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Static, TabbedContent, TabPane, Tabs
 from textual.worker import get_current_worker
 
@@ -44,7 +45,7 @@ LEGENDS = {
         ("Tab", "views", 6),
         ("h/j/k/l", "move", 3),
         ("[ ]", "year", 4),
-        ("u", "widen", 5),
+        ("u", "parent folder", 5),
         ("x", "authored/all", 1),
         ("X", "details", 2),
         ("Enter", "list", 2),
@@ -55,7 +56,7 @@ LEGENDS = {
         ("h/l", "move", 3),
         ("0/$", "ends", 7),
         ("m", "volume", 2),
-        ("u", "widen", 5),
+        ("u", "parent folder", 5),
         ("x", "authored/all", 1),
         ("X", "details", 2),
         ("Enter", "list", 2),
@@ -134,6 +135,12 @@ class EvolutionScreen(Screen):
         border-title-align: left;
     }
 
+    #evolution-container.flash {
+        border: solid #e0af68;
+        border-title-color: #1a1b26;
+        border-title-background: #e0af68;
+    }
+
     #evolution-summary {
         height: 1;
         padding: 0 1;
@@ -165,8 +172,16 @@ class EvolutionScreen(Screen):
         ("2", "show_view('frequency')", "Frequency"),
         ("x", "toggle_excludes", "Authored/everything"),
         ("X", "show_rules", "Exclusion rules"),
-        ("u", "widen", "Widen scope"),
+        ("u", "widen", "Widen to parent folder"),
+        # One pane here, so Ctrl+h/j/k/l go straight to the neighboring tmux pane
+        ("ctrl+h", "tmux_pane('L')", "Pane left"),
+        ("ctrl+j", "tmux_pane('D')", "Pane down"),
+        ("ctrl+k", "tmux_pane('U')", "Pane up"),
+        ("ctrl+l", "tmux_pane('R')", "Pane right"),
     ]
+
+    # The title flashes this many times when u changes the scope
+    TITLE_FLASHES = 3
 
     def __init__(
         self,
@@ -208,6 +223,7 @@ class EvolutionScreen(Screen):
         self._mode_chosen = False
         self._warned = False
         self._filtered: FilterResult | None = None
+        self._flash_timers: list[Timer] = []
 
     def compose(self) -> ComposeResult:
         with Container(id="evolution-container"):
@@ -374,9 +390,27 @@ class EvolutionScreen(Screen):
         self._all_commits = []
         self.commits = []
         self._set_title()
+        self._flash_title()
         self.query_one("#evolution-summary", Static).update("")
         self._show_message("Loading history…")
         self._load_history()
+
+    def _flash_title(self) -> None:
+        """
+        Flash the title so the new scope is noticed.
+        """
+        container = self.query_one("#evolution-container", Container)
+        for timer in self._flash_timers:
+            timer.stop()
+        container.add_class("flash")
+        # One timer per step, ending with the flash off
+        self._flash_timers = [
+            self.set_timer(0.25 * step, partial(container.set_class, step % 2 == 0, "flash"))
+            for step in range(1, 2 * self.TITLE_FLASHES)
+        ]
+
+    def action_tmux_pane(self, direction: str) -> None:
+        self.app._tmux_select_pane(direction)
 
     def action_toggle_excludes(self) -> None:
         if self._exclusions is None:
@@ -388,8 +422,17 @@ class EvolutionScreen(Screen):
         if self._exclusions is None or self._filtered is None:
             return
         self.app.push_screen(
-            ExclusionDetailsModal(self._exclusions, self._filtered, self.scope_label, self.mode)
+            ExclusionDetailsModal(
+                self._exclusions, self._filtered, self.scope_label, self.mode, toggle_mode=self._toggle_from_details
+            )
         )
+
+    def _toggle_from_details(self) -> str:
+        """
+        x pressed in the details modal: toggle here and report the new mode.
+        """
+        self.action_toggle_excludes()
+        return self.mode
 
     # Tabs
 

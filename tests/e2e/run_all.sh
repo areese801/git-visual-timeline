@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 > "${SCRIPT_DIR}/results.tap"
 
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║  gvt End-to-End Test Suite — Sections A, G, I                ║"
+echo "║  gvt End-to-End Test Suite — Sections A, G, I                  ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 

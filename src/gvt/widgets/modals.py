@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
@@ -684,6 +686,7 @@ class HelpModal(ModalScreen):
                 ("0/$", "First/last period (frequency)"),
                 ("m", "Volume mode: size over time + churn (frequency)"),
                 ("u", "Widen scope to the parent folder"),
+                ("Ctrl+h/j/k/l", "Move to the neighboring tmux pane"),
                 ("x", "Toggle authored only / everything"),
                 ("X", "Exclusion details: what's left out and why"),
                 ("Enter", "List commits → open in timeline"),
@@ -732,6 +735,7 @@ class ExclusionDetailsModal(ModalScreen):
         ("escape", "dismiss_modal", "Close"),
         ("q", "dismiss_modal", "Close"),
         ("X", "dismiss_modal", "Close"),
+        ("x", "toggle_mode", "Authored/all"),
         ("j", "scroll(1)", "Down"),
         ("k", "scroll(-1)", "Up"),
     ]
@@ -744,19 +748,28 @@ class ExclusionDetailsModal(ModalScreen):
     PATH_WIDTH = 64
 
     def __init__(
-        self, exclusions: Exclusions, result: FilterResult, scope_label: str, mode: str, **kwargs
+        self,
+        exclusions: Exclusions,
+        result: FilterResult,
+        scope_label: str,
+        mode: str,
+        toggle_mode: Callable[[], str] | None = None,
+        **kwargs,
     ) -> None:
         """
         :param exclusions: Rules and how their layers were resolved.
         :param result: Outcome of applying the rules to the scope's commits.
         :param scope_label: Human name for the scope.
         :param mode: "authored" or "everything" (what the screen shows now).
+        :param toggle_mode: Switches the screen behind to the other mode and
+            returns the new mode; x does nothing without it.
         """
         super().__init__(**kwargs)
         self.exclusions = exclusions
         self.result = result
         self.scope_label = scope_label
         self.mode = mode
+        self.toggle_mode = toggle_mode
 
     def _heading(self, text: Text, title: str, note: str = "") -> None:
         text.append(f"\n{title}", style=f"bold {COLOR_AMBER}")
@@ -770,9 +783,10 @@ class ExclusionDetailsModal(ModalScreen):
         """
         result = self.result
         config = self.exclusions.config
+        applied = self.mode == "authored"
         text = Text()
 
-        if self.mode == "authored":
+        if applied:
             text.append("Mode: ", style=COLOR_DIM)
             text.append("authored", style=f"bold {COLOR_PURPLE}")
             text.append("  (press x to show everything)\n", style=COLOR_DIM)
@@ -781,15 +795,39 @@ class ExclusionDetailsModal(ModalScreen):
             text.append("everything", style=f"bold {COLOR_PURPLE}")
             text.append("  these exclusions are not applied now (press x to apply them)\n", style=COLOR_DIM)
 
-        share = result.excluded_lines / result.total_lines if result.total_lines else 0
+        # What the charts count now: authored leaves the excluded lines and
+        # commits out, everything counts them all
+        total = result.total_lines
+        share = result.excluded_lines / total if total else 0
+        all_commits = len(result.commits) + result.dropped_commits
+        excluded_where = "in excluded files" if applied else "are in files authored mode excludes"
+        if applied:
+            text.append("Counting ", style=COLOR_TEXT)
+            text.append(f"{total - result.excluded_lines:,}", style=f"bold {COLOR_GREEN}")
+            text.append(f" of {total:,} changed lines", style=COLOR_TEXT)
+        else:
+            text.append("Counting all ", style=COLOR_TEXT)
+            text.append(f"{total:,}", style=f"bold {COLOR_GREEN}")
+            text.append(" changed lines", style=COLOR_TEXT)
+        text.append(" · ", style=COLOR_DIM)
         text.append(f"{result.excluded_lines:,}", style=f"bold {COLOR_RED}")
-        text.append(f" of {result.total_lines:,} changed lines ({share:.0%}) are in excluded files", style=COLOR_TEXT)
         n_files = len(result.by_file)
-        text.append(f" · {n_files:,} {'file' if n_files == 1 else 'files'}", style=COLOR_TEXT)
+        text.append(
+            f" ({share:.0%}) {excluded_where} · {n_files:,} {'file' if n_files == 1 else 'files'}\n",
+            style=COLOR_TEXT,
+        )
+        if applied:
+            text.append("Counting ", style=COLOR_TEXT)
+            text.append(f"{len(result.commits):,}", style=f"bold {COLOR_GREEN}")
+            text.append(f" of {all_commits:,} commits", style=COLOR_TEXT)
+        else:
+            text.append("Counting all ", style=COLOR_TEXT)
+            text.append(f"{all_commits:,}", style=f"bold {COLOR_GREEN}")
+            text.append(" commits", style=COLOR_TEXT)
         if result.dropped_commits:
             n = result.dropped_commits
-            verb = "commit touched only excluded files and is" if n == 1 else "commits touched only excluded files and are"
-            text.append(f"\n{n:,} {verb} left out of commit counts", style=COLOR_TEXT)
+            only = "only excluded files" if applied else "only files authored mode excludes"
+            text.append(f" · {n:,} touched {only}", style=COLOR_TEXT)
         text.append("\n")
 
         self._heading(text, 'What "authored" means')
@@ -807,7 +845,10 @@ class ExclusionDetailsModal(ModalScreen):
             files_by_rule.setdefault(label, []).append((path, lines))
 
         ranked_rules = sorted(result.by_rule.items(), key=lambda item: -item[1])
-        self._heading(text, "What was excluded", "by the rule that matched, largest first")
+        if applied:
+            self._heading(text, "What was excluded", "by the rule that matched, largest first")
+        else:
+            self._heading(text, "What authored mode excludes", "counted now; by the rule that matched, largest first")
         for label, lines in ranked_rules[: self.TOP_RULES]:
             files = sorted(files_by_rule.get(label, []), key=lambda f: -f[1])
             text.append(f"  {lines:>9,} lines  ", style=COLOR_RED)
@@ -826,19 +867,28 @@ class ExclusionDetailsModal(ModalScreen):
         elif len(ranked_rules) > self.TOP_RULES:
             text.append(f"  … {len(ranked_rules) - self.TOP_RULES} more rules\n", style=COLOR_DIM)
 
-        kept = sorted(result.kept_by_file.items(), key=lambda item: -item[1])[: self.TOP_KEPT]
-        if kept:
+        # Everything mode counts the excluded files too, so they compete for the list
+        counted = dict(result.kept_by_file)
+        if not applied:
+            counted.update({path: lines for path, (lines, _) in result.by_file.items()})
+        largest = sorted(counted.items(), key=lambda item: -item[1])[: self.TOP_KEPT]
+        if largest:
             self._heading(
-                text, "Largest files still counted", "noise the rules missed?  → a preset that's off would exclude it"
+                text,
+                "Largest files still counted" if applied else "Largest files counted now",
+                "noise the rules missed?  → a preset that's off would exclude it",
             )
-            for raw_path, lines in kept:
+            for raw_path, lines in largest:
                 path = safe_text(raw_path)
                 shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
                 text.append(f"  {lines:>9,} lines  ", style=COLOR_AMBER)
                 text.append(shown, style=COLOR_TEXT)
-                preset = self.exclusions.suggest_preset(raw_path)
-                if preset:
-                    text.append(f"  → '{preset}' preset", style=COLOR_DIM)
+                if raw_path in result.by_file:
+                    text.append("  excluded in authored mode", style=COLOR_DIM)
+                else:
+                    preset = self.exclusions.suggest_preset(raw_path)
+                    if preset:
+                        text.append(f"  → '{preset}' preset", style=COLOR_DIM)
                 text.append("\n")
 
         self._heading(
@@ -876,12 +926,15 @@ class ExclusionDetailsModal(ModalScreen):
             for warning in config.warnings:
                 text.append(f"  {safe_text(warning)}\n", style=COLOR_RED)
 
-        text.append("\nj/k scroll  ·  Esc close", style=COLOR_DIM)
+        footer = "j/k scroll  ·  Esc close"
+        if self.toggle_mode:
+            footer = "x authored/all  ·  " + footer
+        text.append(f"\n{footer}", style=COLOR_DIM)
         return text
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="exclusion-details-container"):
-            yield Static(self.build_text())
+            yield Static(self.build_text(), id="exclusion-details-text")
 
     def on_mount(self) -> None:
         container = self.query_one("#exclusion-details-container", VerticalScroll)
@@ -894,6 +947,16 @@ class ExclusionDetailsModal(ModalScreen):
             container.scroll_down()
         else:
             container.scroll_up()
+
+    def action_toggle_mode(self) -> None:
+        """
+        Switch authored/everything on the screen behind and reword the report
+        to match, keeping the scroll position.
+        """
+        if self.toggle_mode is None:
+            return
+        self.mode = self.toggle_mode()
+        self.query_one("#exclusion-details-text", Static).update(self.build_text())
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)

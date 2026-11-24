@@ -89,7 +89,7 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 Lockfiles, generated snapshots, minified bundles and vendored code are committed on purpose but say little about how a project evolves. By default the Evolution views count only **authored** code:
 
 - `x` switches between authored and everything.
-- `X` opens the exclusion details: what was left out and by which rule, the largest files still counted (with a hint when a preset that's off would catch them), and how the rules were built.
+- `X` opens the exclusion details: what was left out and by which rule, the largest files still counted (with a hint when a preset that's off would catch them), and how the rules were built. Press `x` inside it to switch modes without closing it.
 - `gvt --show-rules` prints the rules for the current repo.
 
 The defaults work without any setup. To change them, see [Configuring Evolution exclusions](#configuring-evolution-exclusions).
@@ -106,7 +106,7 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 - **Copy to clipboard** (`y`/`Y`) — short or full commit hash
 - **Open in editor** (`e`) — open current file in `$VISUAL`/`$EDITOR`/vim (arguments like `code --wait` work)
 - **Remember last file** — reopens to the last file you were viewing per repo
-- **tmux integration** — seamless pane switching at edges
+- **tmux integration** — `Ctrl+h/j/k/l` moves between gvt's panes and on into tmux panes at the edges (see [tmux pane navigation](#tmux-pane-navigation))
 - **Preloaded diffs** — adjacent commits pre-cached for instant navigation
 - **Context-sensitive status bar** showing relevant shortcuts per pane
 
@@ -162,7 +162,8 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 | `[` / `]` | Page back/forward a year (calendar) |
 | `0`/`$` | First/last period (frequency) |
 | `m` | Toggle volume mode (frequency) |
-| `u` | Widen the scope: file → folder → … → whole repo |
+| `u` | Widen to the parent folder: file → folder → … → whole repo (the title flashes) |
+| `Ctrl+h/j/k/l` | Move to the neighboring tmux pane |
 | `x` | Toggle authored only / everything |
 | `X` | Exclusion details: what's left out and why |
 | `Enter` | List commits, then open one in the timeline |
@@ -176,6 +177,14 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 | `Ctrl+n` / `Ctrl+p` | Navigate results (alternative) |
 | `Enter` | Select |
 | `Esc` | Close |
+
+### tmux pane navigation
+
+gvt works with [vim-tmux-navigator](https://github.com/christoomey/vim-tmux-navigator)-style bindings: `Ctrl+h/j/k/l` moves between gvt's panes, and at an edge (or anywhere in the Evolution screen) it moves on to the neighboring tmux pane. For tmux to pass these keys to gvt, its `is_vim` check has to recognize gvt. gvt runs under Python, so on macOS `ps -o comm=` shows `Python` rather than `gvt`; match the command line too:
+
+```tmux
+is_vim="ps -o state= -o comm= -t '#{pane_tty}' | grep -iqE '^[^TXZ ]+ +(\\S+\\/)?g?(view|l?n?vim?x?|fzf)(diff)?$' || ps -o state= -o args= -t '#{pane_tty}' | grep -iqE '^[^TXZ ]+ +\\S*[Pp]ython\\S* +(\\S+/)?gvt( |$)'"
+```
 
 ## Configuring Evolution exclusions
 

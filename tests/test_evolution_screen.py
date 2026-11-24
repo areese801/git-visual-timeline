@@ -348,8 +348,8 @@ async def test_shift_x_lists_rules(fixture_repo):
         assert isinstance(app.screen, ExclusionDetailsModal)
         text = app.screen.build_text().plain
         assert "Mode: authored" in text
-        assert "70 of " in text and "are in excluded files" in text
-        assert "1 commit touched only excluded files and is left out" in text
+        assert "· 70 (" in text and "in excluded files" in text
+        assert "· 1 touched only excluded files" in text
         assert "What was excluded" in text
         assert "70 lines     1 file   preset:lockfiles  pnpm-lock.yaml" in text
         assert "             70  pnpm-lock.yaml" in text  # the file, under its rule
@@ -362,6 +362,39 @@ async def test_shift_x_lists_rules(fixture_repo):
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(app.screen, EvolutionScreen)
+
+
+async def test_x_in_details_toggles_mode_and_updates_text(fixture_repo):
+    _add_lockfile_commits(fixture_repo)
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        await pilot.press("X")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, ExclusionDetailsModal)
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.screen is modal  # still open
+        assert screen.mode == "everything"
+        assert len(screen.commits) == 8  # the charts behind it changed too
+        shown = str(modal.query_one("#exclusion-details-text").render())
+        assert "Mode: everything" in shown
+        assert "are in files authored mode excludes" in shown
+        assert "· 1 touched only files authored mode excludes" in shown
+        assert "What authored mode excludes" in shown
+        assert "Largest files counted now" in shown
+        assert "x authored/all" in shown
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert screen.mode == "authored"
+        assert len(screen.commits) == 7
+        shown = str(modal.query_one("#exclusion-details-text").render())
+        assert "Mode: authored" in shown
+        assert "What was excluded" in shown
 
 
 async def test_repo_config_sets_default_mode(fixture_repo):
@@ -472,3 +505,54 @@ async def test_scope_labels_and_details_show_names_safely(tmp_path):
         await _settle(app, pilot)
         text = app.screen.build_text().plain
         assert "yarn.lock" in text and "‮" not in text
+
+
+async def test_details_counts_follow_the_mode(fixture_repo):
+    _add_lockfile_commits(fixture_repo)
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        await _open_evolution(app, pilot)
+        await pilot.press("X")
+        await pilot.pause()
+        modal = app.screen
+        total = modal.result.total_lines
+        text = modal.build_text().plain
+        assert f"Counting {total - 70:,} of {total:,} changed lines" in text
+        assert "Counting 7 of 8 commits" in text
+        assert "pnpm-lock.yaml  excluded in authored mode" not in text
+
+        await pilot.press("x")
+        await pilot.pause()
+        text = modal.build_text().plain
+        assert f"Counting all {total:,} changed lines" in text
+        assert "Counting all 8 commits" in text
+        # Everything counts the lockfile, so it joins the largest files
+        assert "pnpm-lock.yaml  excluded in authored mode" in text
+
+
+async def test_widen_flashes_the_title_and_names_the_parent(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="src/app.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        container = screen.query_one("#evolution-container")
+        assert "u  parent folder" in str(screen.query_one("#evolution-legend").render())
+        assert not container.has_class("flash")
+        await pilot.press("u")
+        assert container.has_class("flash")
+        await pilot.pause(2)
+        assert not container.has_class("flash")
+
+
+async def test_ctrl_hjkl_hands_off_to_tmux(fixture_repo, monkeypatch):
+    moves = []
+    monkeypatch.setattr(GVTApp, "_tmux_select_pane", staticmethod(moves.append))
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        await pilot.press("ctrl+h", "ctrl+j", "ctrl+k", "ctrl+l")
+        await pilot.pause()
+        assert app.screen is screen
+    assert moves == ["L", "D", "U", "R"]
