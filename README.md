@@ -180,7 +180,7 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 
 ### tmux pane navigation
 
-gvt works with [vim-tmux-navigator](https://github.com/christoomey/vim-tmux-navigator)-style bindings: `Ctrl+h/j/k/l` moves between gvt's panes, and at an edge (or anywhere in the Evolution screen) it moves on to the neighboring tmux pane. For tmux to pass these keys to gvt, its `is_vim` check has to recognize gvt. gvt runs under Python, so on macOS `ps -o comm=` shows `Python` rather than `gvt`; match the command line too:
+gvt works with [vim-tmux-navigator](https://github.com/christoomey/vim-tmux-navigator)-style bindings: `Ctrl+h/j/k/l` moves between gvt's panes, and at an edge (or anywhere in the Evolution screen) it moves on to the neighboring tmux pane. Terminals send `Ctrl+h` as the same key code as Backspace, so Backspace moves left too. For tmux to pass these keys to gvt, its `is_vim` check has to recognize gvt. gvt runs under Python, so on macOS `ps -o comm=` shows `Python` rather than `gvt`; match the command line too:
 
 ```tmux
 is_vim="ps -o state= -o comm= -t '#{pane_tty}' | grep -iqE '^[^TXZ ]+ +(\\S+\\/)?g?(view|l?n?vim?x?|fzf)(diff)?$' || ps -o state= -o args= -t '#{pane_tty}' | grep -iqE '^[^TXZ ]+ +\\S*[Pp]ython\\S* +(\\S+/)?gvt( |$)'"

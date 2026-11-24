@@ -228,3 +228,46 @@ async def test_n_focuses_diff(app_repo):
         await pilot.press("n")
         await pilot.pause()
         assert app._current_pane_idx == 3
+
+
+@pytest.mark.asyncio
+async def test_backspace_moves_focus_left_like_ctrl_h(app_repo):
+    """Terminals send Ctrl+h as the Backspace byte, which Textual reads as backspace."""
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("3")  # commits, a right-hand pane
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert app._current_pane_idx == 0
+        assert app.focused in app.query_one(FileTreeWidget).query("*")
+
+
+@pytest.mark.asyncio
+async def test_backspace_still_edits_search_input(app_repo):
+    from textual.widgets import Input
+
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._all_commits_cache = app.git_repo.get_all_commits()
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(app.screen, CommitSearchModal)
+        await pilot.press("a", "b", "backspace")
+        await pilot.pause()
+        assert app.screen.query_one(Input).value == "a"
+        assert isinstance(app.screen, CommitSearchModal)
+
+
+@pytest.mark.asyncio
+async def test_status_bar_shows_files_hints_when_files_pane_focused(app_repo):
+    """Focus lands on the tree inside the Files pane; the legend must follow it."""
+    from gvt.widgets.status_bar import GVTStatusBar
+
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+        assert app.query_one(GVTStatusBar).focused_pane == "file-tree-widget"
