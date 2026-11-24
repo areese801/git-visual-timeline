@@ -29,6 +29,7 @@ log = get_logger(__name__)
 from gvt.widgets.changed_files import ChangedFilesWidget, ChangedFileSelected, ChangedFileHighlighted
 from gvt.widgets.commit_bar import CommitMessageBar, ShowCommitDetail
 from gvt.widgets.diff_view import DiffContextChanged, DiffViewWidget
+from gvt.widgets.evolution_screen import EvolutionScreen
 from gvt.widgets.file_tree import FileSelected, FileTreeWidget
 from gvt.widgets.modals import (
     CommitDetailPopup,
@@ -75,11 +76,15 @@ class GVTApp(App):
         Binding("y", "copy_short_hash", "Copy hash", show=False),
         Binding("Y", "copy_full_hash", "Copy full hash", show=False),
         Binding("e", "open_in_editor", "Open in editor", show=False),
+        Binding("v", "evolution", "Evolution", show=False),
         Binding("ctrl+h", "focus_left", "Focus left", show=False),
         Binding("ctrl+l", "focus_right", "Focus right", show=False),
         Binding("ctrl+k", "focus_up", "Focus up", show=False),
         Binding("ctrl+j", "focus_down", "Focus down", show=False),
     ]
+
+    # App actions that stay available while the Evolution screen is open
+    _EVOLUTION_ALLOWED_ACTIONS = {"confirm_quit", "show_help"}
 
     def __init__(self, repo_path: str, initial_file: str | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -93,6 +98,8 @@ class GVTApp(App):
         self._q_timer = None
         self._all_commits_cache: list[CommitInfo] | None = None
         self._preload_worker = None
+        # (file, sha) to put the timeline cursor on once that file loads
+        self._pending_focus: tuple[str, str] | None = None
         self._pane_order = [
             "file-tree-widget",
             "timeline-widget",
@@ -241,9 +248,16 @@ class GVTApp(App):
         diff_view.focus()
         self._current_pane_idx = 3
 
-    def _load_file(self, file_path: str) -> None:
-        """Start async loading of a file's commit history."""
+    def _load_file(self, file_path: str, focus_sha: str | None = None) -> None:
+        """
+        Start async loading of a file's commit history.
+
+        :param file_path: Repo-relative file to load.
+        :param focus_sha: Commit to put the timeline cursor on once loaded
+            (defaults to the newest commit).
+        """
         self.current_file = file_path
+        self._pending_focus = (file_path, focus_sha) if focus_sha else None
         self.notify("Loading history...", timeout=10)
         self._do_load_file(file_path)
 
@@ -298,6 +312,13 @@ class GVTApp(App):
             return
 
         timeline.set_commits(self.current_commits)
+        if self._pending_focus and self._pending_focus[0] == file_path:
+            focus_sha = self._pending_focus[1]
+            for idx, commit in enumerate(self.current_commits):
+                if commit.hexsha == focus_sha:
+                    timeline.cursor = idx
+                    break
+        self._pending_focus = None
         self._update_from_timeline(timeline, file_path)
 
         timeline.focus()
@@ -316,7 +337,7 @@ class GVTApp(App):
         if commit.is_wip:
             title = "WIP"
         else:
-            title = f"{commit.short_hash}  {commit.date.strftime('%Y-%m-%d')}  {commit.author}  +{commit.additions} -{commit.deletions}"
+            title = f"{commit.short_hash}  {commit.date.astimezone().strftime('%Y-%m-%d')}  {commit.author}  +{commit.additions} -{commit.deletions}"
         # Commit text comes from the repo: show it literally, not as markup
         self.notify(
             commit.message.strip(),
@@ -642,16 +663,72 @@ class GVTApp(App):
             if not files:
                 return
 
+            def on_file_selected(result) -> None:
+                if result is not None:
+                    self._load_file(result, focus_sha=commit.hexsha)
+
             self.push_screen(
                 CommitFilesModal(commit, files),
                 callback=on_file_selected,
             )
 
-        def on_file_selected(result) -> None:
-            if result is not None:
-                self._load_file(result)
-
         self.push_screen(CommitSearchModal(all_commits), callback=on_commit_selected)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """
+        Disable pane actions while the Evolution screen is open (their widgets
+        aren't on screen); quit and help stay available.
+        """
+        if action in self._EVOLUTION_ALLOWED_ACTIONS:
+            return True
+        app_actions = {b.action.split("(")[0] for b in self.BINDINGS}
+        if action in app_actions and any(isinstance(s, EvolutionScreen) for s in self.screen_stack):
+            return False
+        return True
+
+    def _resolve_evolution_scope(self) -> tuple[str, str, bool, str | None]:
+        """
+        Pick what the Evolution screen covers.
+
+        The highlighted file-tree node when the tree has focus, otherwise the
+        file loaded in the timeline, otherwise the whole repo. Untracked nodes
+        fall back to the whole repo, with a note saying why.
+
+        :returns: (scope path, label, is_file, note to show or None)
+        """
+        scope: tuple[str, bool] | None = None
+        note = None
+        tree = self.query_one("#file-tree-widget", FileTreeWidget)
+        if tree.has_focus_within:
+            scope = tree.cursor_scope()
+            if scope is None and tree.cursor_is_untracked():
+                note = "Untracked files have no history yet, so this shows the whole repo."
+        elif self.current_file and self.current_commits:
+            scope = (self.current_file, True)
+
+        path, is_file = scope or (".", False)
+        if path == ".":
+            return ".", "whole repo", False, note
+        label = safe_text(path) if is_file else safe_text(path.rstrip("/")) + "/"
+        return path, label, is_file, note
+
+    def action_evolution(self) -> None:
+        scope, label, is_file, note = self._resolve_evolution_scope()
+        time_filter = self.query_one("#timeline-widget", TimelineWidget).time_filter
+        if note:
+            self.notify(note, timeout=4, markup=False)
+
+        def on_result(result) -> None:
+            if result is None:
+                return
+            path, sha = result
+            self._save_last_file(path)
+            self._load_file(path, focus_sha=sha)
+
+        self.push_screen(
+            EvolutionScreen(self.git_repo, scope, label, is_file, time_filter),
+            callback=on_result,
+        )
 
     def action_file_search(self) -> None:
         tracked_files = self.git_repo.get_tracked_files()

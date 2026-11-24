@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -30,6 +32,33 @@ COLOR_RANGE = "#283457"
 COLOR_DIM = "#565f89"
 COLOR_BG = "#1a1b26"
 COLOR_WIP = "#e0af68"
+
+
+def parse_time_filter(filter_str: str, now: datetime) -> datetime | None:
+    """
+    Turn a time filter string into a UTC cutoff.
+
+    :param filter_str: '1w', '3m', '1y' (months are 30 days, years 365), an
+        absolute 'YYYY-MM-DD', or '' for no filter.
+    :param now: Reference time for relative filters.
+    :returns: The cutoff datetime, or None when the filter is empty or invalid.
+    """
+    if not filter_str:
+        return None
+
+    unit_days = {"w": 7, "m": 30, "y": 365}
+    unit = filter_str[-1]
+    if unit in unit_days:
+        try:
+            amount = int(filter_str[:-1])
+        except ValueError:
+            return None
+        return now - timedelta(days=amount * unit_days[unit])
+
+    try:
+        return datetime.strptime(filter_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _heatmap_color(additions: int, deletions: int) -> str:
@@ -109,48 +138,15 @@ class TimelineWidget(Widget, can_focus=True):
 
     def apply_time_filter(self, filter_str: str) -> None:
         """Filter commits by time. Supports: '1w', '1m', '3m', '6m', '1y', 'YYYY-MM-DD', or '' for all."""
-        from datetime import datetime, timedelta, timezone
-
         self.time_filter = filter_str
         self.pin_start = None
         self.pin_end = None
 
-        if not filter_str:
-            self.commits = list(self._all_commits)
+        cutoff = parse_time_filter(filter_str, datetime.now(tz=timezone.utc))
+        if cutoff:
+            self.commits = [c for c in self._all_commits if c.date >= cutoff]
         else:
-            now = datetime.now(tz=timezone.utc)
-            cutoff = None
-
-            # Parse relative time
-            if filter_str.endswith("w"):
-                try:
-                    weeks = int(filter_str[:-1])
-                    cutoff = now - timedelta(weeks=weeks)
-                except ValueError:
-                    pass
-            elif filter_str.endswith("m"):
-                try:
-                    months = int(filter_str[:-1])
-                    cutoff = now - timedelta(days=months * 30)
-                except ValueError:
-                    pass
-            elif filter_str.endswith("y"):
-                try:
-                    years = int(filter_str[:-1])
-                    cutoff = now - timedelta(days=years * 365)
-                except ValueError:
-                    pass
-            else:
-                # Try parsing as date
-                try:
-                    cutoff = datetime.strptime(filter_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
-
-            if cutoff:
-                self.commits = [c for c in self._all_commits if c.date >= cutoff]
-            else:
-                self.commits = list(self._all_commits)
+            self.commits = list(self._all_commits)
 
         if self.commits:
             self.cursor = len(self.commits) - 1

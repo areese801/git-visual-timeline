@@ -75,7 +75,7 @@ class CommitMessageBar(Widget, can_focus=True):
         row.append(f"{marker} ", style=hash_color)
         row.append(commit.short_hash, style=f"bold {hash_color}")
         row.append("  ", style="")
-        row.append(commit.date.strftime("%Y-%m-%d %H:%M"), style=COLOR_DATE)
+        row.append(commit.date.astimezone().strftime("%Y-%m-%d %H:%M"), style=COLOR_DATE)
         row.append("  ", style="")
 
         # Truncate message

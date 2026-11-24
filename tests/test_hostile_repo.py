@@ -213,6 +213,38 @@ class TestApp:
             assert "[red]styled.py" in labels
 
 
+class TestEvolutionHostile:
+    SIZE = (130, 40)
+
+    async def test_evolution_on_markup_named_file(self, hostile_repo):
+        from gvt.widgets.evolution_screen import EvolutionScreen
+        from gvt.widgets.modals import CommitSearchModal
+
+        app = GVTApp(repo_path=hostile_repo, initial_file="[/]bad.py")
+        async with app.run_test(size=self.SIZE) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("v")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, EvolutionScreen)
+            title = str(app.screen.query_one("#evolution-container").border_title)
+            assert "[/]bad.py" in Content.from_markup(title).plain
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, CommitSearchModal)
+            await pilot.press("X")
+            await pilot.pause()
+            assert app.is_running
+
+    def test_rule_text_with_control_characters_is_printed_safely(self, hostile_repo):
+        from gvt.exclusions import Exclusions, describe
+
+        _write(hostile_repo, ".gvt.toml", '[evolution]\nexclude = ["evil\\u001b]0;X\\u0007/"]\n')
+        text = describe(Exclusions.load(hostile_repo, user_config=None))
+        assert "evil" in text
+        assert _no_raw_controls(text)
 # Characters git passes through raw with core.quotePath=false: C1 controls and
 # bidi overrides (these can reorder or control what a terminal shows)
 UNSAFE_DISPLAY = ("‮", "\x9b", "⁦")
@@ -302,4 +334,5 @@ def test_far_future_commit_dates_do_not_crash(tmp_path):
     gvt = GitRepo(repo_dir)
     commits = gvt.get_file_commits("a.txt") + gvt.get_all_commits()
     assert commits and all(c.date.year == 2100 for c in commits)
-    assert gvt.get_blame("a.txt", commits[0].hexsha)[0][2].startswith("2100")
+    # Blame shows local dates; the clamped instant is 2100-01-01 00:00 UTC
+    assert gvt.get_blame("a.txt", commits[0].hexsha)[0][2] == commits[0].date.astimezone().strftime("%Y-%m-%d")
