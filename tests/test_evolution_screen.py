@@ -552,7 +552,8 @@ async def test_ctrl_hjkl_hands_off_to_tmux(fixture_repo, monkeypatch):
     async with app.run_test(size=SIZE) as pilot:
         await _settle(app, pilot)
         screen = await _open_evolution(app, pilot)
-        await pilot.press("ctrl+h", "ctrl+j", "ctrl+k", "ctrl+l")
+        # Terminals send Ctrl+h as the Backspace byte, which Textual reads as backspace
+        await pilot.press("ctrl+h", "ctrl+j", "ctrl+k", "ctrl+l", "backspace")
         await pilot.pause()
         assert app.screen is screen
-    assert moves == ["L", "D", "U", "R"]
+    assert moves == ["L", "D", "U", "R", "L"]

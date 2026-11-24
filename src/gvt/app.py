@@ -78,6 +78,9 @@ class GVTApp(App):
         Binding("e", "open_in_editor", "Open in editor", show=False),
         Binding("v", "evolution", "Evolution", show=False),
         Binding("ctrl+h", "focus_left", "Focus left", show=False),
+        # Terminals send Ctrl+h as the Backspace byte, which Textual reads as
+        # backspace; text inputs still get Backspace first
+        Binding("backspace", "focus_left", "Focus left", show=False),
         Binding("ctrl+l", "focus_right", "Focus right", show=False),
         Binding("ctrl+k", "focus_up", "Focus up", show=False),
         Binding("ctrl+j", "focus_down", "Focus down", show=False),
@@ -160,11 +163,13 @@ class GVTApp(App):
 
     def on_descendant_focus(self, event) -> None:
         """Track which pane is focused and update status bar legend."""
-        widget = event.widget
-        widget_id = widget.id or ""
-        if widget_id in self._pane_order:
-            self._current_pane_idx = self._pane_order.index(widget_id)
-            self.query_one(GVTStatusBar).set_focused_pane(widget_id)
+        # Focus can land inside a pane (the Files pane focuses its inner tree),
+        # so use the nearest pane that contains the focused widget
+        for node in (event.widget, *event.widget.ancestors):
+            if node.id in self._pane_order:
+                self._current_pane_idx = self._pane_order.index(node.id)
+                self.query_one(GVTStatusBar).set_focused_pane(node.id)
+                return
 
 
     def _last_file_path(self) -> Path:

@@ -175,6 +175,7 @@ class EvolutionScreen(Screen):
         ("u", "widen", "Widen to parent folder"),
         # One pane here, so Ctrl+h/j/k/l go straight to the neighboring tmux pane
         ("ctrl+h", "tmux_pane('L')", "Pane left"),
+        ("backspace", "tmux_pane('L')", "Pane left"),  # how terminals send Ctrl+h
         ("ctrl+j", "tmux_pane('D')", "Pane down"),
         ("ctrl+k", "tmux_pane('U')", "Pane up"),
         ("ctrl+l", "tmux_pane('R')", "Pane right"),
