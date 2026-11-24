@@ -10,6 +10,28 @@ from git import Repo
 from gvt.git.repo import GitRepo
 
 
+@pytest.fixture(autouse=True)
+def close_git_repos(monkeypatch):
+    """
+    Close every GitPython Repo a test opens.
+
+    Each Repo keeps `git cat-file` processes and their pipes open until it is
+    garbage collected, so a full run can pass macOS's default limit of 256 open
+    files ("Too many open files").
+    """
+    opened = []
+    original_init = Repo.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        opened.append(self)
+
+    monkeypatch.setattr(Repo, "__init__", tracking_init)
+    yield
+    for repo in opened:
+        repo.close()
+
+
 @pytest.fixture
 def fixture_repo(tmp_path):
     """
