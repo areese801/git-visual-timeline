@@ -211,3 +211,95 @@ class TestApp:
             tree = app.query_one(FileTreeWidget)._tree
             labels = [str(child.label) for child in tree.root.children]
             assert "[red]styled.py" in labels
+
+
+# Characters git passes through raw with core.quotePath=false: C1 controls and
+# bidi overrides (these can reorder or control what a terminal shows)
+UNSAFE_DISPLAY = ("‮", "\x9b", "⁦")
+
+
+def _display_safe(text: str) -> bool:
+    return not any(ch in text for ch in UNSAFE_DISPLAY) and _no_raw_controls(text)
+
+
+@pytest.fixture
+def unicode_tricks_repo(tmp_path):
+    repo_dir = str(tmp_path / "tricks")
+    os.makedirs(repo_dir)
+    repo = Repo.init(repo_dir)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@example.com")
+    _write(repo_dir, "bidi‮txt.py", "x\n")
+    _write(repo_dir, "c1\x9bname.py", "y\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+    repo.git.tag("v1‮rtl")
+    return repo_dir
+
+
+class TestDisplayedNames:
+    SIZE = (120, 40)
+
+    def test_ref_names_are_safe(self, unicode_tricks_repo):
+        commits = GitRepo(unicode_tricks_repo).get_all_commits()
+        assert "v1" in commits[0].refs
+        assert _display_safe(commits[0].refs)
+
+    async def test_file_names_with_c1_and_bidi_are_shown_escaped(self, unicode_tricks_repo):
+        from gvt.widgets.changed_files import ChangedFilesWidget
+        from gvt.widgets.status_bar import GVTStatusBar
+
+        path = "bidi‮txt.py"
+        app = GVTApp(repo_path=unicode_tricks_repo, initial_file=path)
+        async with app.run_test(size=self.SIZE) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app.current_file == path  # the real name still opens the file
+
+            title = Content.from_markup(str(app.query_one("#diff-pane").border_title)).plain
+            assert "bidi" in title and _display_safe(title)
+
+            tree = app.query_one(FileTreeWidget)._tree
+            labels = [str(child.label) for child in tree.root.children]
+            assert labels and all(_display_safe(label) for label in labels)
+
+            status = app.query_one(GVTStatusBar)._render_info_line().plain
+            assert "bidi" in status and _display_safe(status)
+
+            changed = app.query_one(ChangedFilesWidget)
+            rendered = " ".join(line.plain for line in changed._lines)
+            assert "bidi" in rendered and _display_safe(rendered)
+
+    async def test_commit_files_picker_shows_names_escaped(self, unicode_tricks_repo):
+        from gvt.widgets.modals import CommitFilesModal
+
+        app = GVTApp(repo_path=unicode_tricks_repo)
+        async with app.run_test(size=self.SIZE) as pilot:
+            await pilot.pause()
+            app._all_commits_cache = app.git_repo.get_all_commits()
+            await pilot.press("c")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, CommitFilesModal)
+            text = " ".join(str(s.render()) for s in app.screen.query("Static"))
+            assert "bidi" in text and _display_safe(text)
+
+
+def test_far_future_commit_dates_do_not_crash(tmp_path):
+    repo_dir = str(tmp_path / "future")
+    os.makedirs(repo_dir)
+    repo = Repo.init(repo_dir)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@example.com")
+    _write(repo_dir, "a.txt", "x\n")
+    repo.git.add("a.txt")
+    stamp = "@300000000000 +0000"  # year 11476
+    repo.git.commit("-m", "far", env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
+    gvt = GitRepo(repo_dir)
+    commits = gvt.get_file_commits("a.txt") + gvt.get_all_commits()
+    assert commits and all(c.date.year == 2100 for c in commits)
+    assert gvt.get_blame("a.txt", commits[0].hexsha)[0][2].startswith("2100")
