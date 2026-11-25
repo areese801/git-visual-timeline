@@ -43,7 +43,9 @@ else
 fi
 
 # ── A3: gvt outside any git repo ─────────────────────────────────────────
-(cd "$NOGIT_DIR" && run_cli)
+pushd "$NOGIT_DIR" >/dev/null
+run_cli
+popd >/dev/null
 if assert_exit_code "$CLI_EXIT" 1 "exit 1" && assert_contains "$CLI_STDERR" "not a git" "error message"; then
     log_result "A3" pass "gvt outside git repo errors with exit 1"
 else
@@ -69,7 +71,9 @@ fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 # ── A5: gvt does-not-exist.py ────────────────────────────────────────────
-(cd "$FIXTURE_REPO" && run_cli does-not-exist.py)
+pushd "$FIXTURE_REPO" >/dev/null
+run_cli does-not-exist.py
+popd >/dev/null
 if assert_exit_code "$CLI_EXIT" 1 "exit 1" && assert_contains "$CLI_STDERR" "not found" "error message"; then
     log_result "A5" pass "gvt with missing file errors with exit 1"
 else
@@ -79,21 +83,10 @@ fi
 # ── A8: gvt in empty repo (no commits) ───────────────────────────────────
 SESSION="a8_empty"
 tmux_spawn "$SESSION" "cd $EMPTY_REPO && $GVT"
-sleep 4
-capture_pane "$SESSION"
-# It should either be running (showing something) or have exited with an error
-if session_alive "$SESSION"; then
-    log_result "A8" pass "gvt in empty repo did not crash (TUI alive)"
-    send_keys "$SESSION" "qq"
-    sleep 1
+if wait_for_content "$SESSION" "[2] Timeline" 10; then
+    log_result "A8" pass "timeline visible with empty repository"
 else
-    # Check if it exited cleanly (not a crash/segfault)
-    # With no commits there may be a traceback - check tmux pane
-    if echo "$PANE_TEXT" | grep -qi "traceback\|segfault\|core dump" 2>/dev/null; then
-        log_result "A8" fail "gvt crashed in empty repo: $(echo "$PANE_TEXT" | head -5)"
-    else
-        log_result "A8" pass "gvt in empty repo exited without crash"
-    fi
+    log_result "A8" fail "timeline did not appear with empty repository"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -139,34 +132,16 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 # ── A11: Launch, kill -TERM ──────────────────────────────────────────────
 SESSION="a11_sigterm"
-tmux_spawn "$SESSION" "cd $FIXTURE_REPO && $GVT file.py"
-sleep 3
-if session_alive "$SESSION"; then
-    # Find the gvt/python process
-    GVT_PID=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
-    if [ -n "$GVT_PID" ]; then
-        # The actual gvt process is a child of the shell
-        CHILD_PID=$(pgrep -P "$GVT_PID" 2>/dev/null | head -1 || echo "")
-        TARGET_PID="${CHILD_PID:-$GVT_PID}"
-        kill -TERM "$TARGET_PID" 2>/dev/null || true
-        sleep 2
-        # Terminal should be restored - check that tmux session exited or pane shows shell
-        if ! session_alive "$SESSION"; then
-            log_result "A11" pass "SIGTERM caused clean exit"
-        else
-            capture_pane "$SESSION"
-            # If we see a shell prompt, terminal was restored
-            if echo "$PANE_TEXT" | grep -qE '^\$|^#|trustycage' 2>/dev/null; then
-                log_result "A11" pass "SIGTERM restored terminal (shell prompt visible)"
-            else
-                log_result "A11" pass "SIGTERM handled (session still exists but gvt exited)"
-            fi
-        fi
+tmux_spawn "$SESSION" "cd '$FIXTURE_REPO' || exit 1; stty sane </dev/tty; stty -g </dev/tty > '$_E2E_RUN_DIR/tty.before'; '$GVT' file.py </dev/tty & pid=\$!; echo \$pid > '$_E2E_RUN_DIR/pid'; wait \$pid; echo \$? > '$_E2E_RUN_DIR/status'; stty -g </dev/tty > '$_E2E_RUN_DIR/tty.after'"
+if wait_for_content "$SESSION" "[2] Timeline" 10 && kill -TERM "$(cat "$_E2E_RUN_DIR/pid")"; then
+    wait_for_exit "$SESSION" 10
+    if [[ -f "$_E2E_RUN_DIR/status" && "$(cat "$_E2E_RUN_DIR/status")" == "143" ]] && cmp -s "$_E2E_RUN_DIR/tty.before" "$_E2E_RUN_DIR/tty.after"; then
+        log_result "A11" pass "gvt exited with SIGTERM status and restored terminal settings"
     else
-        log_result "A11" fail "could not find gvt PID"
+        log_result "A11" fail "SIGTERM status or terminal settings did not match"
     fi
 else
-    log_result "A11" fail "gvt exited before SIGTERM could be sent"
+    log_result "A11" fail "could not signal the running TUI"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -225,3 +200,5 @@ fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 echo "── Section A complete ──"
+
+(( FAIL_COUNT == 0 ))

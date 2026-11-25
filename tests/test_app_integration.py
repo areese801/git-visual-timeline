@@ -1,7 +1,12 @@
 """Integration tests for the full GVT app using Textual's async test framework."""
 
+import asyncio
 import os
+import threading
 import time
+from contextlib import nullcontext
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from git import Repo
@@ -12,7 +17,7 @@ from gvt.widgets.diff_view import DiffViewWidget
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.changed_files import ChangedFilesWidget
 from gvt.widgets.commit_bar import CommitMessageBar
-from gvt.widgets.modals import CommitFilesModal, CommitSearchModal
+from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, FileSearchModal
 
 
 @pytest.fixture
@@ -53,14 +58,14 @@ def make_app(repo_dir, initial_file=None):
 @pytest.mark.asyncio
 async def test_app_launches(app_repo):
     app = make_app(app_repo)
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         assert app.is_running
 
 
 @pytest.mark.asyncio
 async def test_file_tree_shows_files(app_repo):
     app = make_app(app_repo)
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)):
         tree = app.query_one("#file-tree-widget", FileTreeWidget)
         assert "hello.py" in tree.tracked_files
         assert "other.py" in tree.tracked_files
@@ -271,3 +276,162 @@ async def test_status_bar_shows_files_hints_when_files_pane_focused(app_repo):
         await pilot.press("1")
         await pilot.pause()
         assert app.query_one(GVTStatusBar).focused_pane == "file-tree-widget"
+
+
+async def test_delayed_diff_cannot_replace_untracked_preview(app_repo, monkeypatch):
+    path = Path(app_repo) / "notes.txt"
+    path.write_text("preview " + "x" * 200)
+    app = make_app(app_repo)
+    started = threading.Event()
+    release = threading.Event()
+    original = app.git_repo.get_diff
+
+    def delayed(*args, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app.git_repo, "get_diff", delayed)
+    async with app.run_test(size=(100, 35)) as pilot:
+        app._load_file("hello.py")
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            app._load_untracked_file("notes.txt")
+        finally:
+            release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        view = app.query_one(DiffViewWidget)
+        assert view.virtual_size.width >= 208
+        view.action_toggle_full_file()
+        assert "preview " in view._lines[0].plain
+
+
+async def test_reopening_worktree_reloads_patch(app_repo):
+    app = make_app(app_repo)
+    path = Path(app_repo) / "hello.py"
+    async with app.run_test(size=(100, 35)) as pilot:
+        for value in ("first edit", "second edit"):
+            path.write_text(value + "\n")
+            app._load_file("hello.py")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert "+" + value in app.query_one(DiffViewWidget).diff_text
+
+
+async def test_empty_time_filter_clears_selectable_rows(app_repo):
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test(size=(100, 35)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        callbacks = []
+
+        def open_filter(screen, callback):
+            callbacks.append(callback)
+
+        with patch.object(app, "push_screen", open_filter):
+            app.action_time_filter()
+        callbacks[0]("2099-01-01")
+        assert app.query_one(ChangedFilesWidget).files == []
+        assert app.query_one(CommitMessageBar).right_commit is None
+        assert not app.query_one(DiffViewWidget).diff_text
+
+
+async def test_pre_rename_commit_displays_historical_content(app_repo):
+    repo = Repo(app_repo)
+    target = repo.head.commit.parents[0].hexsha
+    repo.index.move(["hello.py", "renamed.py"])
+    repo.index.commit("Rename greeting")
+    app = make_app(app_repo)
+    async with app.run_test(size=(100, 35)) as pilot:
+        app._load_file("renamed.py", focus_sha=target)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        view = app.query_one(DiffViewWidget)
+        view.action_toggle_full_file()
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert "print('world')" in view._full_file_content
+
+
+async def test_file_picker_highlights_results_beyond_first_fifty(app_repo):
+    app = make_app(app_repo)
+    files = [f"file-{index}" for index in range(60)]
+    async with app.run_test(size=(90, 30)) as pilot:
+        picker = FileSearchModal(files)
+        app.push_screen(picker)
+        await pilot.pause()
+        picker.selected_idx = 55
+        picker._update_results()
+        await pilot.pause()
+        labels = list(picker.query("#file-search-results Static"))
+        assert any(
+            "▸ file-55" in str(label.render())
+            and label.region.overlaps(picker.query_one("#file-search-results").region)
+            for label in labels
+        )
+
+
+async def test_editor_preserves_timeline_comparison(app_repo):
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test(size=(100, 35)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        timeline = app.query_one(TimelineWidget)
+        timeline.apply_time_filter("1970-01-01")
+        app.current_commits = timeline.commits
+        timeline.cursor = 0
+        timeline.pin_start = 0
+        timeline.pin_end = 1
+        view = app.query_one(DiffViewWidget)
+        view.focus()
+        with (
+            patch.object(app, "suspend", nullcontext),
+            patch("gvt.app.subprocess.run") as editor,
+        ):
+            editor.return_value.returncode = 0
+            app.action_open_in_editor()
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert (
+            timeline.time_filter,
+            timeline.cursor,
+            timeline.pin_start,
+            timeline.pin_end,
+        ) == ("1970-01-01", 0, 0, 1)
+        assert app.focused is view
+
+
+async def test_context_change_retains_changed_file_selection(app_repo):
+    app = make_app(app_repo, initial_file="hello.py")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        changed = app.query_one(ChangedFilesWidget)
+        changed.set_files([("one", 1, 0), ("two", 1, 0)])
+        changed.action_cursor_down()
+        app.query_one(DiffViewWidget).action_more_context()
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert changed.selected_idx == 1
+
+
+async def test_inline_diff_does_not_require_full_blob(app_repo, monkeypatch):
+    app = make_app(app_repo, initial_file="hello.py")
+    reads = []
+    monkeypatch.setattr(
+        app.git_repo,
+        "get_file_at_commit",
+        lambda *args: reads.append(args) or "content",
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        view = app.query_one(DiffViewWidget)
+        assert view.diff_text and not reads
+        view.action_toggle_full_file()
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        assert reads and view._full_file_content == "content"

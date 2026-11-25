@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.markup import escape
 from textual.message import Message
-from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widget import Widget
 from textual.widgets import Input, Label, Static
 from rich.text import Text
 
 from gvt.exclusions import Exclusions, FilterResult
 from gvt.git.repo import CommitInfo
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name, safe_text
+from gvt.widgets.timeline import parse_time_filter
 
 try:
     from thefuzz import fuzz
@@ -140,7 +140,8 @@ class CommitSearchModal(ModalScreen):
         results = self.query_one("#commit-search-results", Vertical)
         results.remove_children()
 
-        for display_idx, (commit_idx, commit) in enumerate(self.filtered[:50]):
+        start = max(0, self.selected_idx - 25)
+        for display_idx, (_, commit) in enumerate(self.filtered[start:start + 50], start):
             line = Text()
             is_selected = display_idx == self.selected_idx
 
@@ -160,6 +161,8 @@ class CommitSearchModal(ModalScreen):
             if is_selected:
                 label.styles.background = COLOR_SELECTED_BG
             results.mount(label)
+            if is_selected:
+                self.call_after_refresh(label.scroll_visible, animate=False)
 
     def on_key(self, event) -> None:
         input_focused = self.query_one("#commit-search-input", Input).has_focus
@@ -265,7 +268,8 @@ class FileSearchModal(ModalScreen):
         results = self.query_one("#file-search-results", Vertical)
         results.remove_children()
 
-        for display_idx, file_path in enumerate(self.filtered[:50]):
+        start = max(0, self.selected_idx - 25)
+        for display_idx, file_path in enumerate(self.filtered[start:start + 50], start):
             line = Text()
             is_selected = display_idx == self.selected_idx
 
@@ -274,12 +278,14 @@ class FileSearchModal(ModalScreen):
             else:
                 line.append("  ")
 
-            line.append(safe_text(file_path), style=COLOR_TEXT)
+            line.append(safe_name(file_path), style=COLOR_TEXT)
 
             label = Static(line)
             if is_selected:
                 label.styles.background = COLOR_SELECTED_BG
             results.mount(label)
+            if is_selected:
+                self.call_after_refresh(label.scroll_visible, animate=False)
 
     def on_key(self, event) -> None:
         input_focused = self.query_one("#file-search-input", Input).has_focus
@@ -395,7 +401,7 @@ class CommitFilesModal(ModalScreen):
     def compose(self) -> ComposeResult:
         c = self.commit
         header = Text()
-        header.append(f"Files changed in ", style=COLOR_DIM)
+        header.append("Files changed in ", style=COLOR_DIM)
         header.append(f"{c.short_hash}", style=f"bold {COLOR_ACCENT}")
         header.append(f"  {c.first_line}", style=COLOR_TEXT)
         header.append(f"  ({len(self.files)} files)", style=COLOR_DIM)
@@ -420,7 +426,7 @@ class CommitFilesModal(ModalScreen):
             else:
                 line.append("  ")
 
-            line.append(safe_text(file_path), style=COLOR_TEXT if not is_selected else f"bold {COLOR_TEXT}")
+            line.append(safe_name(file_path), style=COLOR_TEXT if not is_selected else f"bold {COLOR_TEXT}")
             line.append("  ", style="")
             line.append(f"+{adds}", style=COLOR_GREEN)
             line.append(f" -{dels}", style=COLOR_RED)
@@ -595,7 +601,13 @@ class TimeFilterModal(ModalScreen):
             # Check if input has focus
             input_widget = self.query_one("#time-filter-input", Input)
             if input_widget.has_focus and input_widget.value.strip():
-                self.dismiss(input_widget.value.strip())
+                value = input_widget.value.strip()
+                if parse_time_filter(value, datetime.now(timezone.utc)) is None:
+                    self.notify(
+                        "Enter a date (YYYY-MM-DD) or a positive duration such as 3m."
+                    )
+                else:
+                    self.dismiss(value)
             else:
                 value, _ = self.PRESETS[self.selected_idx]
                 self.dismiss(value)
@@ -856,7 +868,7 @@ class ExclusionDetailsModal(ModalScreen):
                 text.append(f"{len(files):>4} {'file ' if len(files) == 1 else 'files'}  ", style=COLOR_DIM)
             text.append(f"{label}\n", style=f"bold {COLOR_TEXT}")
             for raw_path, file_lines in files[: self.FILES_PER_RULE]:
-                path = safe_text(raw_path)
+                path = safe_name(raw_path)
                 shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
                 text.append(f"  {file_lines:>15,}  ", style=COLOR_DIM)
                 text.append(f"{shown}\n", style=COLOR_TEXT)
@@ -879,7 +891,7 @@ class ExclusionDetailsModal(ModalScreen):
                 "noise the rules missed?  → a preset that's off would exclude it",
             )
             for raw_path, lines in largest:
-                path = safe_text(raw_path)
+                path = safe_name(raw_path)
                 shown = path if len(path) <= self.PATH_WIDTH else "…" + path[-(self.PATH_WIDTH - 1):]
                 text.append(f"  {lines:>9,} lines  ", style=COLOR_AMBER)
                 text.append(shown, style=COLOR_TEXT)

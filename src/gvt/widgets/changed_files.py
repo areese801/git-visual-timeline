@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from textual.strip import Strip
+from rich.style import Style
+from rich.segment import Segment
 from rich.text import Text
 from textual.message import Message
-from textual.reactive import reactive
 from textual.scroll_view import ScrollView
 
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name
 
 COLOR_ACCENT = "#7aa2f7"
 COLOR_TEXT = "#c0caf5"
@@ -73,8 +75,8 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
             return
 
         for idx, (raw_path, adds, dels) in enumerate(self.files):
-            file_path = safe_text(raw_path)
-            line = Text()
+            file_path = safe_name(raw_path)
+            line = Text(style=COLOR_TEXT)
             is_selected = idx == self.selected_idx
 
             if is_selected:
@@ -104,16 +106,19 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
             self._lines.append(line)
 
     def render_line(self, y: int) -> "Strip":
-        from textual.strip import Strip
-        from rich.style import Style
-        from rich.segment import Segment
 
         scroll_y = int(self.scroll_offset.y)
         line_idx = y + scroll_y
 
         if line_idx < len(self._lines):
             text = self._lines[line_idx]
-            segments = list(text.render(self.app.console))
+            console = self.app.console
+            segments = [
+                segment
+                if segment.style is not None
+                else Segment(segment.text, console.get_style(text.style or COLOR_TEXT))
+                for segment in text.render(console)
+            ]
             if line_idx == self.selected_idx and self.files:
                 bg_style = Style(bgcolor=COLOR_SELECTED_BG)
                 segments = [
@@ -124,8 +129,6 @@ class ChangedFilesWidget(ScrollView, can_focus=True):
                 if rendered_width < self.size.width:
                     segments.append(Segment(" " * (self.size.width - rendered_width), bg_style))
             return Strip(segments)
-        from rich.style import Style
-        from rich.segment import Segment
         bg = Style(bgcolor="#1a1b26")
         return Strip([Segment(" " * self.size.width, bg)])
 

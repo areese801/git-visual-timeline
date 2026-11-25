@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re as re_module
 
+from textual.geometry import Size
+from textual.strip import Strip
+from rich.segment import Segment
 from rich.text import Text
+from rich.style import Style
 from textual.message import Message
 from textual.reactive import reactive
 from textual.scroll_view import ScrollView
@@ -58,10 +62,11 @@ class DiffViewWidget(ScrollView, can_focus=True):
         ("shift+right", "scroll_right_step", "Scroll right"),
     ]
 
-    diff_text: reactive[str] = reactive("")
+    diff_text: reactive[str] = reactive("", init=False)
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._diff_line_to_file_line: dict[int, int] = {}
         self._lines: list[Text] = []
         self._hunk_positions: list[int] = []
         self.context_lines: int = 3
@@ -101,7 +106,6 @@ class DiffViewWidget(ScrollView, can_focus=True):
 
     def _update_virtual_size(self) -> None:
         """Set virtual size based on line count and max content width."""
-        from textual.geometry import Size
         self.virtual_size = Size(self._max_content_width(), max(len(self._lines), 1))
 
     def watch_diff_text(self, value: str) -> None:
@@ -126,36 +130,18 @@ class DiffViewWidget(ScrollView, can_focus=True):
             self._lines.append(Text("No diff to display", style=COLOR_DIM))
             return
 
-        lines = diff.split("\n")
-        line_no = 0
-        new_file_line = 0  # tracks position in the new (right) file
-
-        for raw_line in lines:
-            line_no += 1
-            line = Text()
-
-            gutter = f"{line_no:>4} "
-            line.append(gutter, style=COLOR_LINE_NO)
-
-            if raw_line.startswith("@@"):
-                self._hunk_positions.append(len(self._lines))
-                line.append(raw_line, style=f"bold {COLOR_HUNK}")
-                # Parse new file line number from @@ -a,b +c,d @@
-                match = re_module.search(r"\+(\d+)", raw_line)
-                if match:
-                    new_file_line = int(match.group(1)) - 1
-            elif raw_line.startswith("+"):
-                new_file_line += 1
-                self._diff_line_to_file_line[len(self._lines)] = new_file_line - 1
-                line.append(raw_line, style=f"{COLOR_ADD_FG} on {COLOR_ADD_BG}")
-            elif raw_line.startswith("-"):
-                # Deletions don't advance new file line
-                line.append(raw_line, style=f"{COLOR_DEL_FG} on {COLOR_DEL_BG}")
-            else:
-                new_file_line += 1
-                self._diff_line_to_file_line[len(self._lines)] = new_file_line - 1
-                line.append(raw_line, style=COLOR_TEXT)
-
+        for index, (raw_line, kind, number) in enumerate(self._patch_lines(diff)):
+            line = Text(f"{index + 1:>4} ", style=COLOR_LINE_NO)
+            if kind == "@":
+                self._hunk_positions.append(index)
+            elif kind in ("+", " ") and number is not None:
+                self._diff_line_to_file_line[index] = number - 1
+            style = {
+                "@": f"bold {COLOR_HUNK}",
+                "+": f"{COLOR_ADD_FG} on {COLOR_ADD_BG}",
+                "-": f"{COLOR_DEL_FG} on {COLOR_DEL_BG}",
+            }.get(kind, COLOR_TEXT)
+            line.append(raw_line, style=style)
             self._lines.append(line)
 
         # Add context info to first line
@@ -166,29 +152,35 @@ class DiffViewWidget(ScrollView, can_focus=True):
         if self._lines:
             self._lines[0].append_text(mode_info)
 
-    def _parse_diff_line_numbers(self, diff: str) -> None:
-        """Extract which lines in the new file were added/changed."""
-        self._full_file_add_lines = set()
-        self._full_file_del_lines = set()
-        if not diff:
-            return
+    @staticmethod
+    def _patch_lines(diff: str):
+        """
+        Yield each patch line, its hunk role, and its one-based new-file position.
+        """
+        number = None
+        for line in diff.split("\n"):
+            kind = ""
+            if line.startswith("@@ "):
+                match = re_module.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+                number = int(match.group(1)) if match else None
+                kind = "@"
+            elif number is not None and line[:1] in {"+", "-", " "}:
+                kind = line[0]
+            elif line.startswith("diff "):
+                number = None
+            yield line, kind, number
+            if kind in {"+", " "}:
+                number += 1
 
-        new_line = 0
-        for raw_line in diff.split("\n"):
-            if raw_line.startswith("@@"):
-                # Parse @@ -a,b +c,d @@ to get new file line number
-                match = re_module.search(r"\+(\d+)", raw_line)
-                if match:
-                    new_line = int(match.group(1)) - 1
-            elif raw_line.startswith("+"):
-                new_line += 1
-                self._full_file_add_lines.add(new_line)
-            elif raw_line.startswith("-"):
-                # Deletions don't advance the new file line counter
-                # but we track the position for context
-                self._full_file_del_lines.add(new_line + 1)
-            else:
-                new_line += 1
+    def _parse_diff_line_numbers(self, diff: str) -> None:
+        """Extract which lines in the new file were added or deleted."""
+        self._full_file_add_lines.clear()
+        self._full_file_del_lines.clear()
+        for _, kind, number in self._patch_lines(diff):
+            if kind == "+":
+                self._full_file_add_lines.add(number)
+            elif kind == "-":
+                self._full_file_del_lines.add(number)
 
     def _render_full_file(self) -> None:
         """Render the full file with changed lines highlighted."""
@@ -247,22 +239,22 @@ class DiffViewWidget(ScrollView, can_focus=True):
             for i in range(max_len):
                 left = old_buf[i] if i < len(old_buf) else None
                 right = new_buf[i] if i < len(new_buf) else None
-                if left and right:
+                if left is not None and right is not None:
                     pairs.append((left, right, "change"))
-                elif left:
+                elif left is not None:
                     pairs.append((left, None, "del"))
                 else:
                     pairs.append((None, right, "add"))
             old_buf.clear()
             new_buf.clear()
 
-        for raw_line in diff.split("\n"):
-            if raw_line.startswith("@@"):
+        for raw_line, kind, _ in self._patch_lines(diff):
+            if kind == "@":
                 flush_buffers()
                 pairs.append((raw_line, raw_line, "hunk"))
-            elif raw_line.startswith("-"):
+            elif kind == "-":
                 old_buf.append(raw_line[1:])
-            elif raw_line.startswith("+"):
+            elif kind == "+":
                 new_buf.append(raw_line[1:])
             else:
                 flush_buffers()
@@ -317,6 +309,8 @@ class DiffViewWidget(ScrollView, can_focus=True):
     def action_toggle_side_by_side(self) -> None:
         """Toggle between inline and side-by-side diff mode."""
         self.side_by_side = not self.side_by_side
+        if not self.diff_text:
+            return
         if self.view_mode == MODE_FULL:
             self.view_mode = MODE_DIFF
         if self.side_by_side:
@@ -354,8 +348,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
             return None
 
         # In diff mode, blame applies to context and added lines
-        # We need to map display lines back to file lines
-        if self.view_mode == MODE_DIFF and line_idx < len(self._lines):
+        if self.view_mode == MODE_DIFF and not self.side_by_side and line_idx < len(self._lines):
             text_plain = self._lines[line_idx].plain
             # Strip the gutter (line number)
             content = text_plain.lstrip()
@@ -371,9 +364,6 @@ class DiffViewWidget(ScrollView, can_focus=True):
         return None
 
     def render_line(self, y: int) -> "Strip":
-        from textual.strip import Strip
-        from rich.style import Style
-        from rich.segment import Segment
 
         # Search input overlay at the bottom of the visible area
         if self._search_mode and y == self.size.height - 1:
@@ -391,7 +381,13 @@ class DiffViewWidget(ScrollView, can_focus=True):
 
         if line_idx < len(self._lines):
             text = self._lines[line_idx]
-            segments = list(text.render(self.app.console))
+            console = self.app.console
+            segments = [
+                segment
+                if segment.style is not None
+                else Segment(segment.text, console.get_style(text.style or COLOR_TEXT))
+                for segment in text.render(console)
+            ]
 
             # Apply search highlight
             if line_idx in self._search_highlight_lines:
@@ -426,7 +422,7 @@ class DiffViewWidget(ScrollView, can_focus=True):
                 blame_style = Style(color=COLOR_DIM)
                 blame_width = len(blame_text) + 2  # 2 for padding
                 gap = max(1, self.size.width - content_width - blame_width)
-                segments.append(Segment(" " * gap, None))
+                segments.append(Segment(" " * gap, Style()))
                 segments.append(Segment(blame_text, blame_style))
             elif line_idx in self._flash_lines:
                 # Pad flash to full width
@@ -515,14 +511,16 @@ class DiffViewWidget(ScrollView, can_focus=True):
 
     def action_toggle_full_file(self) -> None:
         """Toggle between diff and full-file view."""
+        if not self.diff_text:
+            return
         if self.view_mode == MODE_DIFF:
             self.view_mode = MODE_FULL
             self._render_full_file()
+            if not self._full_file_content:
+                self.post_message(DiffContextChanged(self.context_lines, True))
         else:
             self.view_mode = MODE_DIFF
-            self._parse_diff(self.diff_text)
-            self._update_virtual_size()
-            self.refresh()
+            self.watch_diff_text(self.diff_text)
 
     # --- Diff search ---
 
@@ -638,7 +636,29 @@ class DiffViewWidget(ScrollView, can_focus=True):
 
     def set_message(self, msg: str) -> None:
         """Display a simple message instead of a diff."""
+        self.set_reactive(DiffViewWidget.diff_text, "")
+        self._full_file_content = ""
+        self._blame_data = []
+        self._diff_line_to_file_line.clear()
+        self._full_file_add_lines.clear()
+        self._full_file_del_lines.clear()
+        self._flash_lines.clear()
+        self._exit_search()
         self._lines = [Text(msg, style=COLOR_DIM)]
         self._hunk_positions = []
         self.virtual_size = self.size.with_height(1)
+        self.refresh()
+
+    def set_preview(self, content: str) -> None:
+        """
+        Show an untracked working-tree file with numbered, scrollable lines.
+        """
+        self.set_message("")
+        self._lines = []
+        for number, value in enumerate(content.split("\n"), 1):
+            line = Text(f"{number:>4} ", style=COLOR_LINE_NO)
+            line.append(value, style=COLOR_TEXT)
+            self._lines.append(line)
+        self._update_virtual_size()
+        self.scroll_home(animate=False)
         self.refresh()

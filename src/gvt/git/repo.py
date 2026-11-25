@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -13,13 +15,14 @@ from git import Repo
 from git.exc import GitCommandError
 
 from gvt.logging_setup import get_logger
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name, safe_text
 
 log = get_logger(__name__)
 
 # Commit records start with a NUL byte, which can't appear in commit metadata
-LOG_FORMAT = "--format=%x00%H%n%at%n%an%n%s"
+LOG_FORMAT = "--format=%x00%H%n%at%n%an%n%B"
 RECORD_SEPARATOR = "\x00"
+OBJECT_ID = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})")
 
 # Never run diff programs or text converters configured by the repo
 SAFE_DIFF = ("--no-ext-diff", "--no-textconv")
@@ -90,8 +93,15 @@ class TagInfo:
     date: datetime
 
 
-# Rename syntax in --numstat paths: "dir/{old => new}/f" or "old => new"
-RENAME_BRACES = re.compile(r"\{([^{}]*) => ([^{}]*)\}")
+def _numstat_entry(record: str, fields: Iterator[str]) -> tuple[str, int, int]:
+    """
+    Read one Git --numstat -z entry, including the two names of a rename.
+    """
+    adds, dels, path = record.split("\t", 2)
+    if not path:
+        next(fields)  # source of a rename or copy
+        path = next(fields)
+    return path, 0 if adds == "-" else int(adds), 0 if dels == "-" else int(dels)
 
 
 # Max number of scoped logs kept in memory
@@ -139,84 +149,24 @@ class GitRepo:
         """
         rel_path = self._to_relative(path)
 
-        # Build ref map
-        ref_map = self._build_ref_map()
-
-        # Use git log with --numstat for stats, avoiding gitpython's object parser
-        output = self.repo.git.log(
-            LOG_FORMAT,
-            "--numstat",
-            "--follow",
-            "--", rel_path,
-        )
-
-        if not output:
+        if self.get_head_sha() is None:
             return []
-
-        commits = []
-        chunks = output.split(RECORD_SEPARATOR)
-
-        for chunk in chunks:
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-
-            lines = chunk.split("\n")
-            if len(lines) < 4:
-                continue
-
-            hexsha = lines[0].strip()
-            if not hexsha or len(hexsha) != 40:
-                continue
-
-            try:
-                timestamp = int(lines[1].strip())
-            except (ValueError, IndexError):
-                continue
-
-            author = safe_text(lines[2].strip())
-            subject = safe_text(lines[3].strip())
-
-            # Remaining lines are numstat (tab-separated: adds, dels, filename)
-            additions = 0
-            deletions = 0
-            for ns_line in [l.strip() for l in lines[4:] if l.strip()]:
-                parts = ns_line.split("\t")
-                if len(parts) >= 3:
-                    fname = parts[2]
-                    if fname == rel_path or fname.endswith("/" + os.path.basename(rel_path)):
-                        try:
-                            additions = int(parts[0]) if parts[0] != "-" else 0
-                            deletions = int(parts[1]) if parts[1] != "-" else 0
-                        except ValueError:
-                            pass
-                        break
-
-            refs_list = ref_map.get(hexsha, [])
-            commits.append(
-                CommitInfo(
-                    hexsha=hexsha,
-                    date=commit_date(timestamp),
-                    author=author,
-                    message=subject,
-                    additions=additions,
-                    deletions=deletions,
-                    refs=" ".join(refs_list),
-                )
-            )
-
-        # Return oldest-first for timeline display
-        commits.reverse()
-        return commits
+        output = self.repo.git.log(
+            *SAFE_DIFF, "-z", LOG_FORMAT, "--numstat", "--follow", "--", rel_path
+        )
+        return list(reversed(self._parse_log(output, self._build_ref_map())))
 
     def get_all_commits(self, max_count: int = 500) -> list[CommitInfo]:
         """
         Get recent commits across the entire repo (not file-specific).
         Uses git log directly. Returns newest-first for search display.
         """
+        if self.get_head_sha() is None:
+            return []
         ref_map = self._build_ref_map()
 
         output = self.repo.git.log(
+            *SAFE_DIFF, "-z",
             f"--max-count={max_count}",
             "--no-merges",
             LOG_FORMAT,
@@ -252,8 +202,19 @@ class GitRepo:
                 return cached
 
         # --follow only works for one file; it keeps history from before a rename
-        follow = ("--follow",) if os.path.isfile(os.path.join(self.root, scope)) else ()
-        output = self.repo.git.log("--no-merges", *follow, LOG_FORMAT, "--numstat", "--", scope)
+        entry = self.repo.git.ls_tree("-z", head, "--", scope) if scope != "." else ""
+        follow = ("--follow",) if entry.split(" ", 2)[1:2] == ["blob"] else ()
+        output = self.repo.git.log(
+            *SAFE_DIFF,
+            "-z",
+            "--no-merges",
+            *follow,
+            LOG_FORMAT,
+            "--numstat",
+            head,
+            "--",
+            scope,
+        )
         commits = self._parse_log(output, self._build_ref_map())
 
         with self._scope_cache_lock:
@@ -318,99 +279,106 @@ class GitRepo:
         return rel if rel and rel != "." else "."
 
     @staticmethod
-    def _numstat_path(path: str) -> str:
-        """
-        Resolve a --numstat path to the file's new name when it was renamed.
-        """
-        if "{" in path and " => " in path:
-            path = RENAME_BRACES.sub(lambda m: m.group(2), path)
-            return re.sub(r"/{2,}", "/", path).strip("/")
-        if " => " in path:
-            return path.split(" => ", 1)[1]
-        return path
-
-    @staticmethod
     def _parse_log(output: str, ref_map: dict[str, list[str]]) -> list[CommitInfo]:
         """
-        Parse `git log` output written with LOG_FORMAT and --shortstat or --numstat.
-
-        With --numstat, totals are the sum of the per-file counts.
-
-        :param output: Raw git log output.
-        :param ref_map: sha -> ref names, used to fill CommitInfo.refs.
-        :returns: Commits in the order git printed them.
+        Parse NUL-framed headers and Git's shortstat or machine-readable numstat.
         """
         commits: list[CommitInfo] = []
-        if not output:
-            return commits
-
-        for chunk in output.split(RECORD_SEPARATOR):
-            chunk = chunk.strip()
-            if not chunk:
+        fields = iter(output.split(RECORD_SEPARATOR))
+        commit = None
+        for record in fields:
+            if not record:
                 continue
-
-            lines = chunk.split("\n")
-            if len(lines) < 4:
-                continue
-
-            hexsha = lines[0].strip()
-            if not hexsha or len(hexsha) != 40:
-                continue
-
-            try:
-                timestamp = int(lines[1].strip())
-            except (ValueError, IndexError):
-                continue
-
-            author = safe_text(lines[2].strip())
-            subject = safe_text(lines[3].strip())
-
-            # Parse numstat lines ("10\t5\tpath", "-\t-\tbinary") or the
-            # shortstat line (" 3 files changed, 10 insertions(+), 5 deletions(-)")
-            total_adds = 0
-            total_dels = 0
-            files: list[tuple[str, int, int]] = []
-            for line in lines[4:]:
-                if "\t" in line:
-                    adds_str, dels_str, path = line.split("\t", 2)
-                    adds = int(adds_str) if adds_str.isdigit() else 0
-                    dels = int(dels_str) if dels_str.isdigit() else 0
-                    files.append((GitRepo._numstat_path(path.strip()), adds, dels))
-                elif "insertion" in line or "deletion" in line:
-                    add_match = re.search(r"(\d+) insertion", line)
-                    del_match = re.search(r"(\d+) deletion", line)
-                    if add_match:
-                        total_adds = int(add_match.group(1))
-                    if del_match:
-                        total_dels = int(del_match.group(1))
-            if files:
-                total_adds = sum(f[1] for f in files)
-                total_dels = sum(f[2] for f in files)
-
-            commits.append(
-                CommitInfo(
-                    hexsha=hexsha,
-                    date=commit_date(timestamp),
-                    author=author,
-                    message=subject,
-                    additions=total_adds,
-                    deletions=total_dels,
-                    refs=" ".join(ref_map.get(hexsha, [])),
-                    files=files,
+            sha, sep, header = record.partition("\n")
+            if sep and OBJECT_ID.fullmatch(sha):
+                try:
+                    timestamp, author, message = header.split("\n", 2)
+                    date = commit_date(int(timestamp))
+                except ValueError:
+                    commit = None
+                    continue
+                commit = CommitInfo(
+                    hexsha=sha,
+                    date=date,
+                    author=safe_text(author),
+                    message=safe_text(message.rstrip("\n")),
+                    additions=0,
+                    deletions=0,
+                    refs=" ".join(ref_map.get(sha, [])),
                 )
-            )
+                commits.append(commit)
+                continue
+            stat = record.lstrip("\n")
+            if "\t" in stat:
+                path, adds, dels = _numstat_entry(stat, fields)
+                if commit is None:
+                    continue
+                commit.files.append((path, adds, dels))
+                commit.additions += adds
+                commit.deletions += dels
+            elif commit is not None:
+                for amount, kind in re.findall(r"(\d+) (insertion|deletion)", stat):
+                    if kind == "insertion":
+                        commit.additions = int(amount)
+                    else:
+                        commit.deletions = int(amount)
         return commits
 
-    def get_diff(self, path: str, commit_a: str, commit_b: str, context_lines: int = 3) -> str:
+    def get_diff(
+        self,
+        path: str,
+        commit_a: str,
+        commit_b: str,
+        context_lines: int = 3,
+        *,
+        previous_path: str | None = None,
+    ) -> str:
         """
         Get unified diff for a file between two commits.
         """
-        rel_path = self._to_relative(path)
-        # Use git diff directly for context line control
-        diff_output = self.repo.git.diff(
-            *SAFE_DIFF, f"-U{context_lines}", commit_a, commit_b, "--", rel_path
+        path = self._to_relative(path)
+        if previous_path and previous_path != path:
+            return self._renamed_diff(
+                self._to_relative(previous_path),
+                path,
+                commit_a,
+                commit_b,
+                context_lines,
+            )
+        return safe_text(
+            self.repo.git.diff(
+                *SAFE_DIFF, f"-U{context_lines}", commit_a, commit_b, "--", path
+            )
         )
-        return safe_text(diff_output)
+
+    def _renamed_diff(
+        self, old: str, new: str, left: str, right: str | None, context: int
+    ) -> str:
+        git = self.repo.git
+        options = (*SAFE_DIFF, f"-U{context}")
+        old_exists = bool(git.ls_tree("-z", left, "--", old))
+        if right is None:
+            work_path = os.path.join(self.root, new)
+            new_exists = os.path.islink(work_path) or os.path.isfile(work_path)
+        else:
+            new_exists = bool(git.ls_tree("-z", right, "--", new))
+        if old_exists and new_exists:
+            args = (f"{right}:{new}", "--") if right is not None else ("--", new)
+            patch = git.diff(*options, f"{left}:{old}", *args)
+            return (
+                safe_text(patch)
+                if patch
+                else f"rename from {safe_name(old)}\nrename to {safe_name(new)}"
+            )
+        # Git recognizes its empty tree without creating an object in the repository.
+        algorithm = "sha256" if len(left) == 64 else "sha1"
+        empty = hashlib.new(algorithm, b"tree 0\0").hexdigest()
+        if old_exists:
+            return safe_text(git.diff(*options, left, empty, "--", old))
+        if new_exists:
+            endpoint = (right,) if right is not None else ()
+            return safe_text(git.diff(*options, empty, *endpoint, "--", new))
+        return ""
 
     def has_uncommitted_changes(self, path: str) -> bool:
         """Check if a file has uncommitted changes (staged or unstaged)."""
@@ -419,11 +387,22 @@ class GitRepo:
         diff_output = self.repo.git.diff(*SAFE_DIFF, "HEAD", "--", rel_path)
         return bool(diff_output.strip())
 
-    def get_diff_to_working_tree(self, path: str, commit_sha: str, context_lines: int = 3) -> str:
+    def get_diff_to_working_tree(
+        self,
+        path: str,
+        commit_sha: str,
+        context_lines: int = 3,
+        *,
+        previous_path: str | None = None,
+    ) -> str:
         """Get diff from a commit to the current working tree for a file."""
-        rel_path = self._to_relative(path)
+        path = self._to_relative(path)
+        if previous_path and previous_path != path:
+            return self._renamed_diff(
+                self._to_relative(previous_path), path, commit_sha, None, context_lines
+            )
         return safe_text(
-            self.repo.git.diff(*SAFE_DIFF, f"-U{context_lines}", commit_sha, "--", rel_path)
+            self.repo.git.diff(*SAFE_DIFF, f"-U{context_lines}", commit_sha, "--", path)
         )
 
     def get_working_tree_stats(self, path: str) -> tuple[int, int]:
@@ -481,13 +460,12 @@ class GitRepo:
             elif raw_line.startswith("author "):
                 authors[current_hash] = safe_text(raw_line[7:])
             elif raw_line.startswith("author-time "):
-                from datetime import datetime, timezone
                 ts = int(raw_line[12:])
                 dates[current_hash] = commit_date(ts).astimezone().strftime("%Y-%m-%d")
             elif not raw_line.startswith("author-") and not raw_line.startswith("committer") and not raw_line.startswith("summary ") and not raw_line.startswith("previous ") and not raw_line.startswith("filename ") and not raw_line.startswith("boundary"):
                 # Could be a commit line: hash orig_line final_line [num_lines]
                 parts = raw_line.split()
-                if parts and len(parts[0]) == 40:
+                if parts and OBJECT_ID.fullmatch(parts[0]):
                     current_hash = parts[0]
 
         return lines
@@ -536,7 +514,7 @@ class GitRepo:
         """
         try:
             output = self.repo.git.diff_tree(
-                *SAFE_DIFF, "--numstat", "-r", "--root", "--no-commit-id", commit_sha
+                *SAFE_DIFF, "--numstat", "-z", "-r", "--root", "--no-commit-id", commit_sha
             )
         except (GitCommandError, ValueError) as e:
             log.warning("diff-tree for %s failed: %s", commit_sha, e)
@@ -545,36 +523,30 @@ class GitRepo:
         if not output:
             return []
 
-        files = []
-        for line in output.strip().split("\n"):
-            parts = line.split("\t")
-            if len(parts) != 3:
-                continue
-            adds_str, dels_str, file_path = parts
-            adds = int(adds_str) if adds_str != "-" else 0
-            dels = int(dels_str) if dels_str != "-" else 0
-            files.append((file_path, adds, dels))
-
-        return sorted(files, key=lambda x: x[0])
+        records = iter(output.split("\0"))
+        return sorted(_numstat_entry(record, records) for record in records if record)
 
     def get_tracked_files(self) -> list[str]:
         """
         Get all tracked file paths relative to repo root.
         Uses git ls-tree directly to avoid gitpython tree parsing issues.
         """
-        output = self.repo.git.ls_tree("-r", "--name-only", "HEAD")
+        if self.get_head_sha() is None:
+            output = self.repo.git.ls_files("-z", "--cached")
+        else:
+            output = self.repo.git.ls_tree("-rz", "--name-only", "HEAD")
         if not output:
             return []
-        return sorted(output.split("\n"))
+        return sorted(output.removesuffix("\0").split("\0"))
 
     def get_untracked_files(self) -> list[str]:
         """
         Get all untracked file paths relative to repo root.
         """
-        output = self.repo.git.ls_files("--others", "--exclude-standard")
+        output = self.repo.git.ls_files("-z", "--others", "--exclude-standard")
         if not output:
             return []
-        return sorted(output.split("\n"))
+        return sorted(output.removesuffix("\0").split("\0"))
 
     def get_file_content(self, path: str) -> str:
         """
@@ -602,13 +574,18 @@ class GitRepo:
         Get list of branch names and the current branch name.
         """
         branches = [b.name for b in self.repo.branches]
+        return branches, self.get_current_branch()
+
+    def get_current_branch(self) -> str:
+        """
+        Return the active branch name, or HEAD when detached.
+        """
         try:
-            current = self.repo.active_branch.name
+            return self.repo.active_branch.name
         except TypeError:
             # Detached HEAD — expected when viewing a specific commit.
             log.debug("detached HEAD; active_branch unavailable")
-            current = "HEAD"
-        return branches, current
+            return "HEAD"
 
     def _to_relative(self, path: str) -> str:
         """Convert a path to be relative to the repo root."""

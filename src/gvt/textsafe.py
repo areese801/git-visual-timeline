@@ -13,7 +13,7 @@ import re
 
 # C0 controls except tab and newline, DEL, C1 controls, and bidi
 # embedding/override/isolate characters
-_UNSAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+_UNSAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff‪-‮⁦-⁩]")
 
 
 def _visible(match: re.Match[str]) -> str:
@@ -31,3 +31,10 @@ def safe_text(text: str) -> str:
     if text.endswith("\r"):
         text = text[:-1]
     return _UNSAFE.sub(_visible, text)
+
+
+def safe_name(name: str) -> str:
+    """
+    Escape a file or directory name for single-line display.
+    """
+    return safe_text(name.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t"))

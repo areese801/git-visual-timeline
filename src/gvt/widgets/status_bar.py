@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from rich.style import Style
+from rich.segment import Segment
 from rich.text import Text
 from textual.widget import Widget
 from textual.strip import Strip
 
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name, safe_text
 
 COLOR_BAR_BG = "#7aa2f7"
 COLOR_BAR_FG = "#1a1b26"
@@ -104,13 +106,13 @@ class GVTStatusBar(Widget):
         text.append(" gvt", style=f"bold on {COLOR_BAR_BG} {COLOR_BAR_FG}")
 
         if self.file_path:
-            text.append(f"  {safe_text(self.file_path)}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
+            text.append(f"  {safe_name(self.file_path)}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
 
         if self.commit_position:
             text.append(f"  [{self.commit_position}]", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
 
         if self.branch:
-            text.append(f"  ⎇ {self.branch}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
+            text.append(f"  ⎇ {safe_text(self.branch)}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
 
         if self.additions or self.deletions:
             text.append(f"  +{self.additions} -{self.deletions}", style=f"on {COLOR_BAR_BG} {COLOR_BAR_FG}")
@@ -137,8 +139,6 @@ class GVTStatusBar(Widget):
         return text
 
     def render_line(self, y: int) -> Strip:
-        from rich.segment import Segment
-        from rich.style import Style
 
         if y == 0:
             text = self._render_info_line()

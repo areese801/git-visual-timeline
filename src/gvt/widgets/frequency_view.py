@@ -266,8 +266,9 @@ class FrequencyView(EvolutionView):
         """
         cw, bar_w = self._bar_widths()
         line = self._gutter(label)
+        cursor = self.cursor
         for i in range(len(self.periods)):
-            if i == self.cursor:
+            if i == cursor:
                 line.append("━" * bar_w, style=f"bold {COLOR_CURSOR}")
                 line.append("─" * (cw - bar_w), style=COLOR_DIM)
             else:

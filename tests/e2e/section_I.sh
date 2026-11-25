@@ -19,19 +19,10 @@ echo "garbage" > "$REPO_I1/.git/refs/heads/bad-ref"
 
 SESSION="i1_corrupt"
 tmux_spawn "$SESSION" "cd $REPO_I1 && $GVT file.py"
-sleep 4
-
-if session_alive "$SESSION"; then
-    log_result "I1" pass "gvt launches despite corrupt ref"
-    send_keys "$SESSION" "qq"
-    wait_for_exit "$SESSION" 5
+if wait_for_content "$SESSION" "[2] Timeline" 10; then
+    log_result "I1" pass "timeline visible with corrupt ref"
 else
-    capture_pane "$SESSION"
-    if echo "$PANE_TEXT" | grep -qi "traceback" 2>/dev/null; then
-        log_result "I1" fail "gvt crashed with corrupt ref: $(echo "$PANE_TEXT" | tail -5)"
-    else
-        log_result "I1" pass "gvt exited cleanly despite corrupt ref"
-    fi
+    log_result "I1" fail "timeline did not appear with corrupt ref"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -82,17 +73,10 @@ if session_alive "$SESSION"; then
     send_keys "$SESSION" "l"
     sleep 2
 
-    if session_alive "$SESSION"; then
-        log_result "I3" pass "gvt survived .git/HEAD deletion mid-session"
-        send_keys "$SESSION" "qq"
-        wait_for_exit "$SESSION" 5
+    if wait_for_content "$SESSION" "[2] Timeline" 5; then
+        log_result "I3" pass "timeline remained available after HEAD deletion"
     else
-        capture_pane "$SESSION"
-        if echo "$PANE_TEXT" | grep -qi "traceback" 2>/dev/null; then
-            log_result "I3" fail "gvt crashed after .git/HEAD deletion: $(echo "$PANE_TEXT" | tail -5)"
-        else
-            log_result "I3" pass "gvt exited gracefully after .git/HEAD deletion"
-        fi
+        log_result "I3" fail "timeline disappeared after HEAD deletion"
     fi
 else
     log_result "I3" fail "gvt exited before we could delete .git/HEAD"
@@ -106,3 +90,5 @@ log_result "I4" skip "external commit during session — out of scope for this r
 log_result "I5" skip "concurrent pytest — out of scope for this run"
 
 echo "── Section I complete ──"
+
+(( FAIL_COUNT == 0 ))

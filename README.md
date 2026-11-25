@@ -67,7 +67,7 @@ Press `f` for an fzf-style fuzzy file picker that filters as you type.
 
 ### Commit Search
 
-Press `c` to fuzzy search all repo commits by message, branch, or author.
+Press `c` to fuzzy search the 500 most recent non-merge commits reachable from HEAD by message, branch, or author.
 
 ![Commit search](https://raw.githubusercontent.com/areese801/git-visual-timeline/main/assets/gvt-commit-search.gif)
 
@@ -99,7 +99,7 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 - **Evolution** (`v`) — contribution calendar, code frequency and volume charts for a file, directory or the whole repo, counting only authored code by default
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
 - **Diff search** (`/`) — regex search within the diff with `n`/`p` to navigate matches
-- **Commit search** (`c`) — fuzzy search all repo commits by message, branch, or author, then open a file at that commit
+- **Commit search** (`c`) — fuzzy search the 500 most recent non-merge commits reachable from HEAD by message, branch, or author, then open a file at that commit
 - **Time filter** (`t`) — filter timeline by date range (1w, 1m, 3m, 6m, 1y, custom date)
 - **Contributor breakdown** (`B`) — who changed the file and how much
 - **WIP indicator** — hollow tick showing uncommitted changes
@@ -257,12 +257,15 @@ Globs are matched without regular expressions, so no single pattern can make mat
 
 ### Untrusted repositories
 
+When inspecting someone else's project, use a fresh Git clone. gvt runs Git in the local checkout and trusts its Git metadata and local configuration. For a directory supplied with an existing `.git`, follow [Git’s security guidance](https://git-scm.com/docs/git#_security).
+
 Exclusion rules can come from files inside the repo you're viewing: `.gvt.toml`, `.gitattributes`, and ignore files stored in the repo. When the repo came from someone else, gvt treats those files as untrusted:
 
 - **Regex rules from repo files are skipped** unless your own config sets `trust_repo_regex = true`. A crafted regex can take hours to match, and a repo can't grant itself trust. Skipped rules are listed as warnings in `X` and `gvt --show-rules`.
 - **`.gitattributes` patterns are always globs**, as in git.
 - **Paths in a repo's `.gvt.toml`** (`ignore_files`, `ignore_revs`) must stay inside the repo. Absolute paths, `~`, `..` and symlinks that lead outside are refused.
 - **Limits:** files over 256 KB are skipped; each config or rule file contributes at most 1,000 rules; patterns over 256 characters or 16 path segments are skipped; and paths longer than 1,024 characters or nested more than 64 folders deep are never excluded.
+- **Totals across all sources:** at most 100 `ignore_files` entries (repeats and missing files count), 2 MB read from config and rule files, and 5,000 rules. Past any of these, gvt loads no exclusion rules, shows all history, and says so in a warning in `v` and `gvt --show-rules`.
 - **A time budget:** if applying the rules to a scope takes more than 5 seconds, gvt shows everything for that scope and says so, instead of keeping you waiting. Leaving the Evolution screen (or widening it) also stops the work.
 - **Malformed config** (wrong types, deeply nested TOML) becomes a warning, never a crash.
 

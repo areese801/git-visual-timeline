@@ -18,7 +18,13 @@ TEST_COUNT=0
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
-_TMUX_SESSIONS=()
+_E2E_RUN_DIR=$(mktemp -d /tmp/gvt-e2e.XXXXXXXX)
+_E2E_HOME="${_E2E_RUN_DIR}/home"
+mkdir -p "$_E2E_HOME"
+
+tmux() {
+    HOME="$_E2E_HOME" command tmux -f /dev/null -S "$_E2E_RUN_DIR/tmux.sock" "$@"
+}
 
 # ── make_repo <path> ────────────────────────────────────────────────────────
 # Creates a tiny git repo with 2-3 commits for testing.
@@ -68,7 +74,7 @@ run_cli() {
     tmp_stdout=$(mktemp)
     tmp_stderr=$(mktemp)
     set +e
-    "$GVT" "$@" >"$tmp_stdout" 2>"$tmp_stderr"
+    HOME="$_E2E_HOME" "$GVT" "$@" >"$tmp_stdout" 2>"$tmp_stderr"
     CLI_EXIT=$?
     set -e
     CLI_STDOUT=$(cat "$tmp_stdout")
@@ -84,8 +90,8 @@ tmux_spawn() {
     local cmd="$*"
     # Kill existing session if any
     tmux kill-session -t "$session" 2>/dev/null || true
-    tmux new-session -d -s "$session" -x 120 -y 40 "$cmd"
-    _TMUX_SESSIONS+=("$session")
+    tmux new-session -d -s "$session" -x 120 -y 40 -e "HOME=$_E2E_HOME" bash -c "$cmd"
+
 }
 
 # ── send_keys <session> <keys> ─────────────────────────────────────────────
@@ -189,10 +195,8 @@ log_result() {
 
 # ── cleanup_sessions ──────────────────────────────────────────────────────
 cleanup_sessions() {
-    for s in "${_TMUX_SESSIONS[@]:-}"; do
-        tmux kill-session -t "$s" 2>/dev/null || true
-    done
-    _TMUX_SESSIONS=()
+    tmux kill-server 2>/dev/null || true
+    rm -rf "$_E2E_RUN_DIR"
 }
 
 # ── emit_summary ──────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import sys
 
 from gvt import __version__
 from gvt.exclusions import Exclusions, describe
+from gvt.textsafe import safe_name
 
 
 def main():
@@ -45,7 +46,7 @@ def main():
         try:
             repo = Repo(search_dir, search_parent_directories=True)
         except InvalidGitRepositoryError:
-            print(f"Error: {args.file} is not inside a git repository", file=sys.stderr)
+            print(f"Error: {safe_name(args.file)} is not inside a git repository", file=sys.stderr)
             sys.exit(1)
 
         repo_root = repo.working_tree_dir
@@ -54,7 +55,7 @@ def main():
             initial_file = None
         else:
             if not os.path.exists(abs_target):
-                print(f"Error: file not found: {args.file}", file=sys.stderr)
+                print(f"Error: file not found: {safe_name(args.file)}", file=sys.stderr)
                 sys.exit(1)
             initial_file = os.path.relpath(abs_target, repo_root)
     else:
@@ -66,7 +67,7 @@ def main():
             sys.exit(1)
 
     if args.show_rules:
-        print(f"Evolution exclusion rules for {repo.working_tree_dir}\n")
+        print(f"Evolution exclusion rules for {safe_name(repo.working_tree_dir)}\n")
         print(describe(Exclusions.load(repo.working_tree_dir)))
         sys.exit(0)
 
@@ -97,4 +98,4 @@ def main():
     app = GVTApp(repo_path=repo.working_tree_dir, initial_file=initial_file)
     app.run()
     # Force exit after app.run() returns — background worker threads may linger
-    os._exit(0)
+    os._exit(app.return_code or 0)
