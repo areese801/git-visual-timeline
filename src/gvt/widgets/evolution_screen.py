@@ -23,7 +23,7 @@ from gvt.evolution import bucket_by_day, local_day
 from gvt.exclusions import USER_CONFIG, Exclusions, FilterResult
 from gvt.git.repo import CommitInfo, GitRepo, TagInfo
 from gvt.logging_setup import get_logger
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name, safe_text
 from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.evolution_common import EvolutionView, PeriodChosen, plural
 from gvt.widgets.frequency_view import FrequencyView, compact
@@ -268,7 +268,8 @@ class EvolutionScreen(Screen):
             # Last resort: whatever a repo contains, the screen must not hang on
             # "Loading history…" with no explanation
             log.exception("evolution history for %s failed: %s", scope, e)
-            self.app.call_from_thread(self._show_message, "Couldn't read history (see log)")
+            if not worker.is_cancelled:
+                self.app.call_from_thread(self._show_message, "Couldn't read history (see log)", scope)
             return
         if worker.is_cancelled:
             return
@@ -277,8 +278,8 @@ class EvolutionScreen(Screen):
     def _views(self) -> list[EvolutionView]:
         return list(self.query(EvolutionView))
 
-    def _show_message(self, message: str) -> None:
-        if not self.is_attached:
+    def _show_message(self, message: str, scope: str | None = None) -> None:
+        if not self.is_attached or (scope is not None and scope != self.scope):
             return
         for view in self._views():
             view.set_message(message)
@@ -325,7 +326,9 @@ class EvolutionScreen(Screen):
         if self.mode == "authored" and self._filtered is not None:
             excluded = self._filtered.excluded_lines
             text.append("  ·  ", style="#565f89")
-            if self._filtered.over_budget:
+            if self._exclusions is not None and self._exclusions.over_budget:
+                text.append("exclusions off: rule files over the load limits (see X)", style="#e0af68")
+            elif self._filtered.over_budget:
                 text.append("exclusions skipped: rules too slow (see X)", style="#e0af68")
             elif excluded:
                 text.append(f"{compact(excluded)} lines excluded", style="#565f89")
@@ -384,7 +387,7 @@ class EvolutionScreen(Screen):
             return
         self.scope = posixpath.dirname(self.scope.rstrip("/")) or "."
         self.scope_is_file = False
-        self.scope_label = "whole repo" if self.scope == "." else safe_text(self.scope) + "/"
+        self.scope_label = "whole repo" if self.scope == "." else safe_name(self.scope) + "/"
         # Until the new scope loads, x and X have nothing current to act on
         self._exclusions = None
         self._filtered = None

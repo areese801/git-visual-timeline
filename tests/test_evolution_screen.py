@@ -337,6 +337,30 @@ async def test_authored_mode_drops_lockfile_lines_and_x_toggles(fixture_repo):
         assert len(screen.commits) == 7
 
 
+async def test_rules_over_the_load_limits_show_all_history(fixture_repo, monkeypatch):
+    _add_lockfile_commits(fixture_repo)
+    with open(os.path.join(fixture_repo, ".gvt.toml"), "w") as f:
+        f.write('[evolution]\nignore_files = ["gone", "gone"]\n')
+    monkeypatch.setattr("gvt.exclusions.MAX_RULE_FILES_PER_LOAD", 1)
+    app = GVTApp(repo_path=fixture_repo)
+    notes = []
+    original = app.notify
+    monkeypatch.setattr(app, "notify", lambda msg, **k: notes.append(msg) or original(msg, **k))
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        assert screen.mode == "authored"
+        assert len(screen.commits) == 8  # the lockfile-only commit stays
+        summary = str(screen.query_one("#evolution-summary").render())
+        assert "exclusions off: rule files over the load limits" in summary
+        assert any(str(note).startswith("exclusion rules not loaded") for note in notes)
+        await pilot.press("X")
+        await pilot.pause()
+        text = app.screen.build_text().plain
+        assert "Rule loading" in text and "exclusions are off" in text
+        assert "All rules (0)" in text and "→ 'lockfiles' preset" not in text
+
+
 async def test_shift_x_lists_rules(fixture_repo):
     _add_lockfile_commits(fixture_repo)
     app = GVTApp(repo_path=fixture_repo)
@@ -474,6 +498,8 @@ async def test_widen_ignores_results_for_an_older_scope(fixture_repo):
         screen._apply_history("src/app.py", stale, [], None, None, None)
         await _settle(app, pilot)
         assert screen.scope == "src" and len(screen.commits) == 2
+        screen._show_message("obsolete failure", "src/app.py")
+        assert all(view.message != "obsolete failure" for view in screen._views())
 
 
 async def test_scope_labels_and_details_show_names_safely(tmp_path):

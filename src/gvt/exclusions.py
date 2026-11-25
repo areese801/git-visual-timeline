@@ -64,6 +64,14 @@ MAX_MATCH_DEPTH = 64  # nor are paths nested deeper than this
 # Total time apply() may spend matching before it gives up on exclusions
 MATCH_BUDGET_SECONDS = 5.0
 MAX_RULE_FILE_BYTES = 256_000
+# Totals for one Exclusions.load across every source. Ordinary configs use a few
+# ignore files, well under 100 KB and a few hundred rules; past these, loading
+# stops and exclusions are off, so a config can't make loading slow by listing
+# many files (or one file many times). Matching takes about 0.5 µs per rule per
+# path, so more rules than this would run past MATCH_BUDGET_SECONDS anyway.
+MAX_RULE_FILES_PER_LOAD = 100  # ignore_files entries, counting repeats and missing paths
+MAX_RULE_BYTES_PER_LOAD = 2_000_000  # read from config, rule and ignore-revs files
+MAX_RULES_PER_LOAD = 5000
 
 
 def user_config_path() -> Path:
@@ -334,6 +342,28 @@ def gitattributes_rules(text: str, warnings: list[str] | None = None) -> list[Ru
     :param warnings: Collects problems with individual lines, if given.
     """
     rules = []
+    for pattern, include in _linguist_patterns(text):
+        if len(rules) >= MAX_RULES_PER_SOURCE:
+            if warnings is not None:
+                warnings.append(
+                    f".gitattributes: only the first {MAX_RULES_PER_SOURCE} rules are used"
+                )
+            break
+        try:
+            rule = parse_pattern(pattern, ".gitattributes", allow_regex=False)
+        except ValueError as e:
+            if warnings is not None:
+                warnings.append(str(e))
+            continue
+        if rule:
+            rules.append(replace(rule, negate=include))
+    return rules
+
+
+def _linguist_patterns(text: str):
+    """
+    (pattern, re-includes) for each .gitattributes line setting a linguist attribute.
+    """
     for line in text.splitlines():
         parts = line.split()
         if not parts or parts[0].startswith("#"):
@@ -347,15 +377,7 @@ def gitattributes_rules(text: str, warnings: list[str] | None = None) -> list[Ru
             unset = attr.startswith(("-", "!")) or value.lower() == "false"
             verdict = "include" if unset else "exclude"
         if verdict:
-            try:
-                rule = parse_pattern(pattern, ".gitattributes", allow_regex=False)
-            except ValueError as e:
-                if warnings is not None:
-                    warnings.append(str(e))
-                continue
-            if rule:
-                rules.append(replace(rule, negate=verdict == "include"))
-    return rules
+            yield pattern, verdict == "include"
 
 
 @dataclass
@@ -394,33 +416,84 @@ def _inside(root: str, path: Path | str) -> bool:
         return False
 
 
-def _read_small(path: Path, label: str, config: ExclusionConfig) -> str | None:
+class LoadBudgetExceeded(Exception):
+    """
+    Raised when one Exclusions.load goes past a MAX_*_PER_LOAD total.
+    """
+
+
+class _LoadBudget:
+    """
+    Running totals for one Exclusions.load, checked before each read or compile.
+    """
+
+    def __init__(self) -> None:
+        self.files = 0
+        self.bytes = 0
+
+    def file_entry(self) -> None:
+        if self.files >= MAX_RULE_FILES_PER_LOAD:
+            raise LoadBudgetExceeded(f"more than {MAX_RULE_FILES_PER_LOAD} ignore_files entries")
+        self.files += 1
+
+    def read_limit(self) -> int:
+        return min(MAX_RULE_FILE_BYTES, MAX_RULE_BYTES_PER_LOAD - self.bytes)
+
+    def charge(self, size: int) -> None:
+        self.bytes += size
+        if self.bytes > MAX_RULE_BYTES_PER_LOAD:
+            raise LoadBudgetExceeded(
+                f"config and rule files add up to over {MAX_RULE_BYTES_PER_LOAD // 1000:,} KB"
+            )
+
+
+def _read_small(path: Path, label: str, config: ExclusionConfig, budget: _LoadBudget | None = None) -> str | None:
     """
     Read a config or rules file, refusing ones over MAX_RULE_FILE_BYTES.
+
+    :param budget: Totals for the current load; the read stops one byte past
+        what is left of it.
+    :raises LoadBudgetExceeded: If the file doesn't fit in `budget`.
     """
+    limit = MAX_RULE_FILE_BYTES if budget is None else budget.read_limit()
     try:
-        if path.stat().st_size > MAX_RULE_FILE_BYTES:
-            config.warnings.append(f"{label} is too large to read (over {MAX_RULE_FILE_BYTES // 1000} KB)")
-            return None
-        return path.read_text()
-    except (OSError, UnicodeDecodeError) as e:
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+    except OSError as e:
+        config.warnings.append(f"couldn't read {label}: {e}")
+        return None
+    if budget is not None:
+        budget.charge(len(data))
+    if len(data) > MAX_RULE_FILE_BYTES:
+        config.warnings.append(f"{label} is too large to read (over {MAX_RULE_FILE_BYTES // 1000} KB)")
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
         config.warnings.append(f"couldn't read {label}: {e}")
         return None
 
 
-def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str | None = None) -> None:
+def _read_layer(
+    path: Path,
+    label: str,
+    config: ExclusionConfig,
+    repo_root: str | None = None,
+    budget: _LoadBudget | None = None,
+) -> None:
     """
     Merge one config file into `config` (scalars override, lists append).
 
     :param repo_root: Set for the repo layer: the file must stay inside it,
         and settings only a user may grant are ignored.
+    :param budget: Totals for the current load, if any.
     """
     if not path.is_file():
         return
     if repo_root is not None and not _inside(repo_root, path):
         config.warnings.append(f"{label} points outside the repo; ignored")
         return
-    text = _read_small(path, label, config)
+    text = _read_small(path, label, config, budget)
     if text is None:
         return
     try:
@@ -454,16 +527,26 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
         config.warnings.append(f"{label}: default_mode must be 'authored' or 'everything'")
 
     if "presets" in section and isinstance(section["presets"], list):
-        presets = [str(p) for p in section["presets"]]
+        presets = list(dict.fromkeys(str(p) for p in section["presets"]))
         for name in presets:
             if name not in PRESETS:
                 config.warnings.append(f"{label}: unknown preset '{name}'")
         config.presets = [p for p in presets if p in PRESETS]
 
-    if "use_gitattributes" in section:
-        config.use_gitattributes = bool(section["use_gitattributes"])
     elif "presets" in section:
         config.warnings.append(f"{label}: presets must be a list; ignored")
+
+    def boolean(key: str, previous: bool) -> bool:
+        value = section[key]
+        if isinstance(value, bool):
+            return value
+        config.warnings.append(f"{label}: {key} must be a boolean; ignored")
+        return previous
+
+    if "use_gitattributes" in section:
+        config.use_gitattributes = boolean(
+            "use_gitattributes", config.use_gitattributes
+        )
 
     if "ignore_revs" in section:
         revs = clean_path(section["ignore_revs"], "ignore_revs")
@@ -472,7 +555,7 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
             config.ignore_revs_source = label
     if "trust_repo_regex" in section:
         if repo_root is None:
-            config.trust_repo_regex = bool(section["trust_repo_regex"])
+            config.trust_repo_regex = boolean("trust_repo_regex", config.trust_repo_regex)
         else:
             config.warnings.append(
                 f"{label}: trust_repo_regex is only read from your own config "
@@ -489,20 +572,24 @@ def _read_layer(path: Path, label: str, config: ExclusionConfig, repo_root: str 
         config.ignore_files.append((path, syntax, label))
 
 
-def load_config(repo_root: str, user_config: Path | None = USER_CONFIG) -> ExclusionConfig:
+def load_config(
+    repo_root: str, user_config: Path | None = USER_CONFIG, budget: _LoadBudget | None = None
+) -> ExclusionConfig:
     """
     Merge defaults, the user config, and the repo's .gvt.toml (in that order).
 
     :param user_config: Path to the user config, None to skip it, or the
         USER_CONFIG default for user_config_path().
+    :param budget: Totals for the current Exclusions.load, if any.
+    :raises LoadBudgetExceeded: If the config files don't fit in `budget`.
     """
     config = ExclusionConfig()
     if user_config is USER_CONFIG:
         user_config = user_config_path()
     if user_config is not None:
         config.user_label = _label(user_config)
-        _read_layer(user_config, config.user_label, config)
-    _read_layer(Path(repo_root) / REPO_CONFIG_NAME, REPO_CONFIG_NAME, config, repo_root=repo_root)
+        _read_layer(user_config, config.user_label, config, budget=budget)
+    _read_layer(Path(repo_root) / REPO_CONFIG_NAME, REPO_CONFIG_NAME, config, repo_root=repo_root, budget=budget)
     return config
 
 
@@ -516,6 +603,13 @@ def _count(n: int, word: str) -> str:
 def _resolve(repo_root: str, path: str) -> Path:
     expanded = Path(os.path.expanduser(path))
     return expanded if expanded.is_absolute() else Path(repo_root) / expanded
+
+
+def _external_user_file(repo_root: str, path: str) -> bool:
+    expanded = Path(os.path.expanduser(path))
+    return expanded.is_absolute() and not expanded.is_relative_to(
+        Path(repo_root).absolute()
+    )
 
 
 @dataclass
@@ -565,26 +659,56 @@ class Exclusions:
         ignore_revs: set[str],
         config: ExclusionConfig,
         layers: list[LayerStatus] | None = None,
+        over_budget: bool = False,
     ) -> None:
         self.rules = rules
         self.ignore_revs = ignore_revs
         self.config = config
         # How each layer contributed, in the order rules are applied
         self.layers = layers or []
+        # True when loading went past a MAX_*_PER_LOAD total and exclusions are off
+        self.over_budget = over_budget
         self._verdicts: dict[str, Rule | None] = {}
 
     @classmethod
     def load(cls, repo_root: str, user_config: Path | None = USER_CONFIG) -> Exclusions:
         """
         Build the rules for a repo from presets, .gitattributes, and config files.
+
+        If the sources go past MAX_RULE_FILES_PER_LOAD, MAX_RULE_BYTES_PER_LOAD
+        or MAX_RULES_PER_LOAD, loading stops, nothing is excluded (all history
+        is shown) and the result is marked `over_budget` with a warning.
         """
-        config = load_config(repo_root, user_config)
+        try:
+            return cls._load(repo_root, user_config, _LoadBudget())
+        except LoadBudgetExceeded as e:
+            config = ExclusionConfig(presets=[], use_gitattributes=False, ignore_revs="")
+            config.warnings.append(
+                f"exclusion rules not loaded: {e}; nothing is excluded and all history is shown. "
+                "List fewer or smaller rule files in your config or .gvt.toml"
+            )
+            layers = [LayerStatus("Rule loading", f"stopped: {e}; exclusions are off", False)]
+            return cls([], set(), config, layers, over_budget=True)
+
+    @classmethod
+    def _load(cls, repo_root: str, user_config: Path | None, budget: _LoadBudget) -> Exclusions:
+        config = load_config(repo_root, user_config, budget)
         rules: list[Rule] = []
         # Regex rules skipped because they come from inside an untrusted repo
         skipped_regex: Counter[str] = Counter()
         per_source: Counter[str] = Counter()
 
-        def add(text: str, source: str, syntax: str = "glob", from_repo: bool = False) -> None:
+        def add(
+            text: str,
+            source: str,
+            syntax: str = "glob",
+            from_repo: bool = False,
+            include: bool | None = None,
+        ) -> None:
+            """
+            :param include: Set for .gitattributes: every line is a glob, and
+                this (not a leading "!") says whether it re-includes.
+            """
             if per_source[source] >= MAX_RULES_PER_SOURCE:
                 if per_source[source] == MAX_RULES_PER_SOURCE:
                     config.warnings.append(
@@ -592,16 +716,27 @@ class Exclusions:
                     )
                     per_source[source] += 1
                 return
+            line = text.strip()
+            if not line or line.startswith("#"):
+                return
+            if (
+                from_repo
+                and not config.trust_repo_regex
+                and (syntax == "regex" or line.removeprefix("!").startswith("re:"))
+            ):
+                skipped_regex[source] += 1
+                return
+            if len(rules) >= MAX_RULES_PER_LOAD:
+                raise LoadBudgetExceeded(f"the rule sources hold more than {MAX_RULES_PER_LOAD:,} rules")
             try:
-                rule = parse_pattern(text, source, syntax)
+                rule = parse_pattern(text, source, syntax, allow_regex=include is None)
             except ValueError as e:
                 config.warnings.append(str(e))
                 return
             if rule is None:
                 return
-            if rule.regex and from_repo and not config.trust_repo_regex:
-                skipped_regex[source] += 1
-                return
+            if include is not None:
+                rule = replace(rule, negate=include)
             per_source[source] += 1
             rules.append(rule)
 
@@ -624,15 +759,21 @@ class Exclusions:
         if not config.use_gitattributes:
             layers.append(LayerStatus(".gitattributes", "turned off (use_gitattributes = false)", False))
         elif attributes.is_file():
-            text = _read_small(attributes, ".gitattributes", config) if _inside(repo_root, attributes) else None
+            text = (
+                _read_small(attributes, ".gitattributes", config, budget)
+                if _inside(repo_root, attributes)
+                else None
+            )
             if text is None:
                 if not _inside(repo_root, attributes):
                     config.warnings.append(".gitattributes points outside the repo; ignored")
                 layers.append(LayerStatus(".gitattributes", "couldn't be read", False))
             else:
-                found = gitattributes_rules(text, config.warnings)
-                rules += found
-                layers.append(LayerStatus(".gitattributes", _count(len(found), "linguist rule"), bool(found)))
+                before = len(rules)
+                for pattern, include in _linguist_patterns(text):
+                    add(pattern, ".gitattributes", include=include)
+                found = len(rules) - before
+                layers.append(LayerStatus(".gitattributes", _count(found, "linguist rule"), bool(found)))
         else:
             layers.append(LayerStatus(".gitattributes", "no file in this repo", False))
 
@@ -653,26 +794,26 @@ class Exclusions:
             for path, syntax, source in config.ignore_files:
                 if source != label:
                     continue
+                budget.file_entry()
                 file = _resolve(repo_root, path)
                 name = f"{path} (listed in {label})"
                 absolute = os.path.isabs(os.path.expanduser(path))
-                outside = absolute or not _inside(repo_root, file)
-                if from_repo and (path.startswith("~") or outside):
+                inside = _inside(repo_root, file)
+                repo_path = not _external_user_file(repo_root, path)
+                if (from_repo and (absolute or path.startswith("~"))) or (repo_path and not inside):
                     config.warnings.append(f"{label}: ignore file {path} is outside the repo; ignored")
                     layers.append(LayerStatus(name, "outside the repo; ignored", False))
                     continue
                 if not file.is_file():
                     layers.append(LayerStatus(name, "not found in this repo", False))
                     continue
-                text = _read_small(file, path, config)
+                text = _read_small(file, path, config, budget)
                 if text is None:
                     layers.append(LayerStatus(name, "couldn't be read", False))
                     continue
                 before, skipped_before = len(rules), skipped_regex[path]
                 for line in text.splitlines():
-                    # A relative path names a file in the repo (even if it's a
-                    # symlink pointing elsewhere), so its content is the repo's
-                    add(line, path, syntax, from_repo=from_repo or not absolute)
+                    add(line, path, syntax, from_repo=from_repo or repo_path or inside)
                 added, skipped = len(rules) - before, skipped_regex[path] - skipped_before
                 detail = _count(added, f"{syntax} pattern")
                 if skipped:
@@ -690,10 +831,15 @@ class Exclusions:
         if config.ignore_revs:
             revs_file = _resolve(repo_root, config.ignore_revs)
             user_set = config.ignore_revs_source == config.user_label and config.user_label
-            if not user_set and (config.ignore_revs.startswith("~") or not _inside(repo_root, revs_file)):
+            if (not user_set and config.ignore_revs.startswith("~")) or (
+                not _inside(repo_root, revs_file)
+                and not (
+                    user_set and _external_user_file(repo_root, config.ignore_revs)
+                )
+            ):
                 config.warnings.append(f"ignore_revs {config.ignore_revs} is outside the repo; ignored")
             elif revs_file.is_file():
-                revs_text = _read_small(revs_file, config.ignore_revs, config)
+                revs_text = _read_small(revs_file, config.ignore_revs, config, budget)
             if revs_text is not None:
                 for line in revs_text.splitlines():
                     sha = line.strip()
@@ -741,25 +887,29 @@ class Exclusions:
         ignored = 0
         deadline = time.monotonic() + MATCH_BUDGET_SECONDS
         checks = 0
+
+        def interrupted() -> FilterResult | None:
+            nonlocal checks
+            checks += 1
+            if checks % 8:
+                return None
+            if should_stop is not None and should_stop():
+                return FilterResult(commits=[], stopped=True)
+            if time.monotonic() > deadline:
+                self.config.warnings.append(
+                    f"exclusion rules took over {MATCH_BUDGET_SECONDS:.0f} s to apply; "
+                    "showing everything instead"
+                )
+                return FilterResult(
+                    commits=list(commits),
+                    total_lines=sum(c.total_changes for c in commits),
+                    over_budget=True,
+                )
+            return None
+
         for commit in commits:
-            checks += 1 + len(commit.files)
-            if checks >= 8:
-                checks = 0
-                if should_stop is not None and should_stop():
-                    result.stopped = True
-                    break
-                if time.monotonic() > deadline:
-                    # Rules this expensive come from a hostile or pathological
-                    # repo: show everything rather than keep the user waiting
-                    self.config.warnings.append(
-                        f"exclusion rules took over {MATCH_BUDGET_SECONDS:.0f} s to apply; "
-                        "showing everything instead"
-                    )
-                    return FilterResult(
-                        commits=list(commits),
-                        total_lines=sum(c.additions + c.deletions for c in commits),
-                        over_budget=True,
-                    )
+            if interruption := interrupted():
+                return interruption
             result.total_lines += commit.additions + commit.deletions
             if commit.hexsha in self.ignore_revs:
                 lines = commit.additions + commit.deletions
@@ -774,6 +924,8 @@ class Exclusions:
 
             kept = []
             for path, adds, dels in commit.files:
+                if interruption := interrupted():
+                    return interruption
                 rule = self.rule_for(path)
                 if rule is not None and not rule.negate:
                     result.excluded_lines += adds + dels
@@ -813,6 +965,8 @@ class Exclusions:
         """
         Name of a preset that is turned off but would exclude `path`, if any.
         """
+        if self.over_budget:
+            return None
         for name, patterns in PRESETS.items():
             if name in self.config.presets:
                 continue
@@ -826,6 +980,10 @@ def describe(exclusions: Exclusions) -> str:
     Human-readable summary of the merged rules (for gvt --show-rules).
     """
     config = exclusions.config
+    if exclusions.over_budget:
+        lines = ["exclusions: off (the rule sources are over the load limits; all history is shown)"]
+        lines += ["", "warnings:"] + [f"  {safe_text(w)}" for w in config.warnings]
+        return "\n".join(lines)
     available = [name for name in PRESETS if name not in config.presets]
     lines = [
         f"default mode: {config.default_mode}",

@@ -88,18 +88,10 @@ fi
 # ── A8: gvt in empty repo
 SESSION="a8_empty"
 tmux_spawn "$SESSION" "cd $EMPTY_REPO && $GVT"
-sleep 4
-capture_pane "$SESSION"
-if session_alive "$SESSION"; then
-    log_result "A8" pass "gvt in empty repo did not crash (TUI alive)"
-    send_keys "$SESSION" "qq"
-    sleep 1
+if wait_for_content "$SESSION" "[2] Timeline" 10; then
+    log_result "A8" pass "timeline visible with empty repository"
 else
-    if echo "$PANE_TEXT" | grep -qi "traceback\|segfault" 2>/dev/null; then
-        log_result "A8" fail "gvt crashed in empty repo: $(echo "$PANE_TEXT" | head -3)"
-    else
-        log_result "A8" pass "gvt in empty repo exited without crash"
-    fi
+    log_result "A8" fail "timeline did not appear with empty repository"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -143,19 +135,16 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 # ── A11: SIGTERM
 SESSION="a11_sigterm"
-tmux_spawn "$SESSION" "cd $FIXTURE_REPO && $GVT file.py"
-sleep 3
-if session_alive "$SESSION"; then
-    GVT_PID=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
-    CHILD_PID=$(pgrep -P "$GVT_PID" 2>/dev/null | head -1 || echo "")
-    TARGET_PID="${CHILD_PID:-$GVT_PID}"
-    kill -TERM "$TARGET_PID" 2>/dev/null || true
-    sleep 2
-    if ! session_alive "$SESSION" || true; then
-        log_result "A11" pass "SIGTERM handled (process terminated)"
+tmux_spawn "$SESSION" "cd '$FIXTURE_REPO' || exit 1; stty sane </dev/tty; stty -g </dev/tty > '$_E2E_RUN_DIR/tty.before'; '$GVT' file.py </dev/tty & pid=\$!; echo \$pid > '$_E2E_RUN_DIR/pid'; wait \$pid; echo \$? > '$_E2E_RUN_DIR/status'; stty -g </dev/tty > '$_E2E_RUN_DIR/tty.after'"
+if wait_for_content "$SESSION" "[2] Timeline" 10 && kill -TERM "$(cat "$_E2E_RUN_DIR/pid")"; then
+    wait_for_exit "$SESSION" 10
+    if [[ -f "$_E2E_RUN_DIR/status" && "$(cat "$_E2E_RUN_DIR/status")" == "143" ]] && cmp -s "$_E2E_RUN_DIR/tty.before" "$_E2E_RUN_DIR/tty.after"; then
+        log_result "A11" pass "gvt exited with SIGTERM status and restored terminal settings"
+    else
+        log_result "A11" fail "SIGTERM status or terminal settings did not match"
     fi
 else
-    log_result "A11" fail "gvt exited before SIGTERM could be sent"
+    log_result "A11" fail "could not signal the running TUI"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -217,7 +206,7 @@ echo ""
 echo "Running Section G: Logging..."
 echo "──────────────────────────────────────────"
 
-LOG_DIR="${HOME}/.config/gvt"
+LOG_DIR="${_E2E_HOME}/.config/gvt"
 LOG_FILE="${LOG_DIR}/gvt.log"
 TMPDIR_G=$(mktemp -d)
 FIXTURE_REPO_G="${TMPDIR_G}/test-repo"
@@ -246,7 +235,6 @@ fi
 # ── G2: GVT_LOG_LEVEL=DEBUG
 rm -f "$LOG_FILE" "$LOG_FILE.1" "$LOG_FILE.2"
 
-# Use a detached HEAD repo to trigger debug log line in get_branches()
 G2_REPO="${TMPDIR_G}/g2-repo"
 make_repo "$G2_REPO"
 G2_SHA=$(cd "$G2_REPO" && git rev-parse HEAD~1)
@@ -299,7 +287,7 @@ fi
 rm -f "$LOG_FILE" "$LOG_FILE.1" "$LOG_FILE.2"
 mkdir -p "$LOG_DIR"
 
-"$PYTHON" -c "
+HOME="$_E2E_HOME" "$PYTHON" -c "
 import gvt.logging_setup as l
 log = l.get_logger('gvt.rotation_test')
 for i in range(6000):
@@ -322,19 +310,10 @@ chmod 444 "$FAKE_HOME/.config/gvt"
 
 SESSION="g5_ro"
 tmux_spawn "$SESSION" "cd $FIXTURE_REPO_G && HOME=$FAKE_HOME $GVT file.py"
-sleep 4
-
-if session_alive "$SESSION"; then
-    log_result "G5" pass "gvt did not crash with read-only log directory"
-    send_keys "$SESSION" "qq"
-    wait_for_exit "$SESSION" 5
+if wait_for_content "$SESSION" "[2] Timeline" 10; then
+    log_result "G5" pass "timeline visible with read-only home"
 else
-    capture_pane "$SESSION"
-    if echo "$PANE_TEXT" | grep -qi "traceback\|permission" 2>/dev/null; then
-        log_result "G5" fail "gvt crashed with read-only log dir"
-    else
-        log_result "G5" pass "gvt exited cleanly with read-only log dir"
-    fi
+    log_result "G5" fail "timeline did not appear with read-only home"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -354,19 +333,10 @@ echo "garbage" > "$REPO_I1/.git/refs/heads/bad-ref"
 
 SESSION="i1_corrupt"
 tmux_spawn "$SESSION" "cd $REPO_I1 && $GVT file.py"
-sleep 4
-
-if session_alive "$SESSION"; then
-    log_result "I1" pass "gvt launches despite corrupt ref"
-    send_keys "$SESSION" "qq"
-    wait_for_exit "$SESSION" 5
+if wait_for_content "$SESSION" "[2] Timeline" 10; then
+    log_result "I1" pass "timeline visible with corrupt ref"
 else
-    capture_pane "$SESSION"
-    if echo "$PANE_TEXT" | grep -qi "traceback" 2>/dev/null; then
-        log_result "I1" fail "gvt crashed with corrupt ref"
-    else
-        log_result "I1" pass "gvt exited cleanly despite corrupt ref"
-    fi
+    log_result "I1" fail "timeline did not appear with corrupt ref"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
@@ -412,17 +382,10 @@ if session_alive "$SESSION"; then
     sleep 1
     send_keys "$SESSION" "l"
     sleep 2
-    if session_alive "$SESSION"; then
-        log_result "I3" pass "gvt survived .git/HEAD deletion mid-session"
-        send_keys "$SESSION" "qq"
-        wait_for_exit "$SESSION" 5
+    if wait_for_content "$SESSION" "[2] Timeline" 5; then
+        log_result "I3" pass "timeline remained available after HEAD deletion"
     else
-        capture_pane "$SESSION"
-        if echo "$PANE_TEXT" | grep -qi "traceback" 2>/dev/null; then
-            log_result "I3" fail "gvt crashed after .git/HEAD deletion"
-        else
-            log_result "I3" pass "gvt exited gracefully after .git/HEAD deletion"
-        fi
+        log_result "I3" fail "timeline disappeared after HEAD deletion"
     fi
 else
     log_result "I3" fail "gvt exited before .git/HEAD could be deleted"
@@ -443,3 +406,5 @@ echo ""
 echo "Results written to:"
 echo "  TAP:  ${SCRIPT_DIR}/results.tap"
 echo "  XML:  ${SCRIPT_DIR}/results.xml"
+
+(( FAIL_COUNT == 0 ))

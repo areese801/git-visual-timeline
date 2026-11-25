@@ -153,3 +153,11 @@ def test_tmux_missing_from_path_is_ignored(monkeypatch):
 
     monkeypatch.setattr("gvt.app.subprocess.run", missing)
     GVTApp._tmux_select_pane("L")
+
+
+def test_last_file_marker_is_optional(fixture_app, monkeypatch, tmp_path):
+    parent = tmp_path / "not-a-directory"
+    parent.touch()
+    monkeypatch.setattr(fixture_app, "_last_file_path", lambda: parent / "marker")
+    fixture_app._save_last_file("hello.py")
+    assert fixture_app._read_last_file() is None

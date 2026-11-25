@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 
 from rich.text import Text
 from textual import on
@@ -12,7 +11,7 @@ from textual.widget import Widget
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode
 
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name
 
 COLOR_DIM = "#565f89"
 COLOR_UNTRACKED = "#e0af68"
@@ -144,8 +143,7 @@ class FileTreeWidget(Widget, can_focus=True):
         subdirs, files = index.get(dir_key, ([], []))
 
         for subdir in subdirs:
-            # Display name is the last component
-            display_name = safe_text(subdir.split("/")[-1])
+            display_name = safe_name(subdir.split("/")[-1])
             # Text, not str: a str label would be parsed as markup
             if is_untracked:
                 label = Text(display_name, style=COLOR_DIM)
@@ -155,7 +153,7 @@ class FileTreeWidget(Widget, can_focus=True):
             node.allow_expand = True
 
         for file_path in files:
-            display_name = safe_text(file_path.split("/")[-1])
+            display_name = safe_name(file_path.split("/")[-1])
             if is_untracked:
                 label = Text(f"? {display_name}", style=COLOR_DIM)
             else:

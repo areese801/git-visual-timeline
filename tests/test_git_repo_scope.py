@@ -138,13 +138,15 @@ def test_scope_commit_files_limited_to_scope(git_repo):
     assert newest.files == [("src/app.py", 4, 1)]
 
 
-def test_numstat_rename_paths_resolve_to_new_name():
-    assert GitRepo._numstat_path("src/{old.py => new.py}") == "src/new.py"
-    assert GitRepo._numstat_path("{a => b}/x.py") == "b/x.py"
-    assert GitRepo._numstat_path("src/{ => gvt}/app.py") == "src/gvt/app.py"
-    assert GitRepo._numstat_path("src/{gvt => }/app.py") == "src/app.py"
-    assert GitRepo._numstat_path("old.py => new.py") == "new.py"
-    assert GitRepo._numstat_path("plain.py") == "plain.py"
+def test_literal_arrow_and_white_space_are_preserved(git_repo, fixture_repo):
+    repo = Repo(fixture_repo)
+    path = " leading => trailing "
+    with open(os.path.join(fixture_repo, path), "w") as stream:
+        stream.write("data")
+    repo.index.add([path])
+    commit = repo.index.commit("Add unusual path")
+    assert git_repo.get_commit_files(commit.hexsha) == [(path, 1, 0)]
+    assert git_repo.get_scope_commits(".")[0].files == [(path, 1, 0)]
 
 
 def test_scope_commits_handle_renames_and_binaries(git_repo, fixture_repo):
@@ -186,3 +188,77 @@ def test_file_scope_follows_renames(git_repo, fixture_repo):
 def test_directory_scope_does_not_use_follow(git_repo):
     # --follow only works for a single file; a directory scope must still list everything
     assert len(git_repo.get_scope_commits("src")) == 2
+
+
+def test_unborn_repo_lists_index_and_has_no_history(tmp_path):
+    repo = Repo.init(tmp_path)
+    (tmp_path / "staged").write_text("line\n")
+    repo.index.add(["staged"])
+    git = GitRepo(str(tmp_path))
+    assert git.get_tracked_files() == ["staged"]
+    assert git.get_file_commits("staged") == git.get_all_commits() == []
+
+
+def test_history_preserves_message_body_and_pre_rename_stats(git_repo, fixture_repo):
+    repo = Repo(fixture_repo)
+    repo.index.move(["README.md", "GUIDE.md"])
+    repo.index.commit("Rename guide\n\nBody with a tab\tand unicode.")
+    history = git_repo.get_file_commits("GUIDE.md")
+    assert history[0].additions == 3
+    assert history[-1].extra_lines == 2
+    assert "Body with a tab" in git_repo.get_all_commits()[0].searchable_text
+
+
+def test_rename_comparison_excludes_reused_source_name(git_repo, fixture_repo):
+    repo = Repo(fixture_repo)
+    left = repo.head.commit.hexsha
+    repo.index.move(["README.md", "guide.md"])
+    repo.index.commit("Move guide")
+    with open(os.path.join(fixture_repo, "README.md"), "w") as stream:
+        stream.write("unrelated replacement\n")
+    with open(os.path.join(fixture_repo, "guide.md"), "a") as stream:
+        stream.write("guide update\n")
+    repo.index.add(["README.md", "guide.md"])
+    right = repo.index.commit("Update both files").hexsha
+    for diff in (
+        git_repo.get_diff("guide.md", left, right, previous_path="README.md"),
+        git_repo.get_diff_to_working_tree("guide.md", left, previous_path="README.md"),
+    ):
+        assert "+guide update" in diff and "unrelated replacement" not in diff
+    os.unlink(os.path.join(fixture_repo, "guide.md"))
+    deleted = git_repo.get_diff_to_working_tree(
+        "guide.md", left, previous_path="README.md"
+    )
+    assert "deleted file mode" in deleted and "unrelated replacement" not in deleted
+
+
+def test_unchecked_out_file_follows_renames(git_repo, fixture_repo):
+    repo = Repo(fixture_repo)
+    repo.index.move(["README.md", "guide.md"])
+    repo.index.commit("Move guide")
+    os.unlink(os.path.join(fixture_repo, "guide.md"))
+    assert "Add README" in [c.message for c in git_repo.get_scope_commits("guide.md")]
+
+
+def test_blame_recognizes_long_object_ids(git_repo, monkeypatch):
+    first, second = "1" * 64, "2" * 64
+    output = f"{first} 1 1 1\nauthor First\n\tone\n{second} 2 2 1\nauthor Second\n\ttwo"
+    monkeypatch.setattr(
+        type(git_repo.repo.git), "blame", lambda *args, **kwargs: output, raising=False
+    )
+    assert git_repo.get_blame("hello.py", first) == [
+        (first[:7], "First", ""),
+        (second[:7], "Second", ""),
+    ]
+
+
+def test_log_skips_invalid_timestamp_and_its_stats():
+    first, second = "1" * 40, "2" * 40
+    records = [
+        f"{first}\n0\nA\nfirst",
+        "1\t0\tgood",
+        f"{second}\n\nB\nsecond",
+        "3\t0\tother",
+    ]
+    commits = GitRepo._parse_log("\0".join(records), {})
+    assert [(c.hexsha, c.files) for c in commits] == [(first, [("good", 1, 0)])]

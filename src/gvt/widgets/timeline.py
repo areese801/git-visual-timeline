@@ -51,9 +51,11 @@ def parse_time_filter(filter_str: str, now: datetime) -> datetime | None:
     if unit in unit_days:
         try:
             amount = int(filter_str[:-1])
-        except ValueError:
+            if amount <= 0:
+                return None
+            return now - timedelta(days=amount * unit_days[unit])
+        except (ValueError, OverflowError):
             return None
-        return now - timedelta(days=amount * unit_days[unit])
 
     try:
         return datetime.strptime(filter_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -135,6 +137,27 @@ class TimelineWidget(Widget, can_focus=True):
             self.cursor = 0
         self._notify()
         self.refresh()
+
+    def refresh_commits(self, commits: list[CommitInfo]) -> None:
+        """
+        Retain the current comparison across a working-tree refresh.
+        """
+        previous = self.commits
+        cursor, start, end = self.cursor, self.pin_start, self.pin_end
+        self._all_commits = commits
+        self.apply_time_filter(self.time_filter)
+        positions = {commit.hexsha: index for index, commit in enumerate(self.commits)}
+
+        def position(index: int | None) -> int | None:
+            if index is None or index >= len(previous):
+                return None
+            return positions.get(previous[index].hexsha)
+
+        current = position(cursor)
+        if current is not None:
+            self.cursor = current
+        self.pin_start = position(start)
+        self.pin_end = position(end) if self.pin_start is not None else None
 
     def apply_time_filter(self, filter_str: str) -> None:
         """Filter commits by time. Supports: '1w', '1m', '3m', '6m', '1y', 'YYYY-MM-DD', or '' for all."""

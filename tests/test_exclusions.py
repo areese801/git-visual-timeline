@@ -196,7 +196,7 @@ class TestConfigLayers:
         exclusions = Exclusions.load(str(repo), user_config=None)
         warnings = " ".join(exclusions.config.warnings)
         assert "nope" in warnings
-        assert "re:([" in warnings
+        assert "skipped 1 regex rule" in warnings
 
     def test_gitattributes_layer_can_be_disabled(self, tmp_path):
         repo = tmp_path / "repo"
@@ -592,3 +592,229 @@ def test_deep_paths_are_never_matched(tmp_path):
     exclusions = Exclusions.load(str(tmp_path), user_config=None)
     assert exclusions.excludes("/".join(["d"] * 10) + "/yarn.lock")
     assert not exclusions.excludes("/".join(["d"] * 70) + "/yarn.lock")
+
+
+def test_trust_requires_a_boolean(tmp_path):
+    user = tmp_path / "user.toml"
+    user.write_text('[evolution]\ntrust_repo_regex = "false"\n')
+    config = load_config(str(tmp_path), user)
+    assert not config.trust_repo_regex and config.warnings
+
+
+def test_untrusted_regex_is_skipped_before_compilation(tmp_path):
+    (tmp_path / ".gvt.toml").write_text('[evolution]\nexclude = ["!re:["]\n')
+    warnings = Exclusions.load(str(tmp_path), user_config=None).config.warnings
+    assert any("skipped" in warning for warning in warnings)
+
+
+def test_absolute_in_repo_ignore_file_needs_user_trust(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    rules = repo / "rules.txt"
+    rules.write_text("^demo/\n")
+    user = tmp_path / "user.toml"
+    user.write_text(
+        f'[evolution]\nignore_files = [{{path = "{rules}", syntax = "regex"}}]\n'
+    )
+    assert not Exclusions.load(str(repo), user).excludes("demo/file")
+
+
+def test_relative_ignore_file_stays_in_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "outside").write_text("ordinary.txt\n")
+    (repo / "rules").symlink_to(tmp_path / "outside")
+    user = tmp_path / "user.toml"
+    user.write_text('[evolution]\nignore_files = ["rules"]\n')
+    assert not Exclusions.load(str(repo), user).excludes("ordinary.txt")
+
+
+def test_attributes_honor_source_cap(monkeypatch):
+    monkeypatch.setattr("gvt.exclusions.MAX_RULES_PER_SOURCE", 1)
+    warnings = []
+    rules = gitattributes_rules(
+        "a linguist-generated\nb linguist-generated\n", warnings
+    )
+    assert [rule.pattern for rule in rules] == ["a"] and warnings
+
+
+def test_large_commit_checks_cancellation_during_filtering(tmp_path):
+    rules = Exclusions.load(str(tmp_path), user_config=None)
+    commit = _commit("a", [(f"src/{i}", 1, 0) for i in range(80)])
+    result = rules.apply([commit], should_stop=lambda: bool(rules._verdicts))
+    assert result.stopped and len(rules._verdicts) < 80
+
+
+def test_valid_presets_have_no_type_warning(tmp_path):
+    (tmp_path / ".gvt.toml").write_text('[evolution]\npresets = ["lockfiles"]\n')
+    assert not load_config(str(tmp_path), None).warnings
+
+
+def test_rule_file_read_obeys_byte_budget(tmp_path, monkeypatch):
+    (tmp_path / ".gitattributes").write_text("a linguist-generated\n")
+    original = Path.stat
+
+    def stale_stat(path, *args, **kwargs):
+        data = original(path, *args, **kwargs)
+        if path.name == ".gitattributes":
+            values = list(data)
+            values[6] = 1
+            return type(data)(values)
+        return data
+
+    monkeypatch.setattr(Path, "stat", stale_stat)
+    monkeypatch.setattr("gvt.exclusions.MAX_RULE_FILE_BYTES", 8)
+    assert not Exclusions.load(str(tmp_path), user_config=None).excludes("a")
+
+
+def test_absolute_ignore_revs_inside_repo_stays_inside(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    external = tmp_path / "revisions"
+    sha = "a" * 40
+    external.write_text(sha)
+    link = repo / "rules"
+    link.symlink_to(external)
+    user = tmp_path / "user.toml"
+    user.write_text(f'[evolution]\nignore_revs = "{link}"\n')
+    assert not Exclusions.load(str(repo), user).ignore_revs
+    user.write_text(f'[evolution]\nignore_revs = "{external}"\n')
+    assert Exclusions.load(str(repo), user).ignore_revs == {sha}
+
+
+class TestLoadBudget:
+    """
+    Totals across every rule source in one Exclusions.load.
+    """
+
+    @staticmethod
+    def _repo(tmp_path: Path, toml: str) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".gvt.toml").write_text(f"[evolution]\npresets = []\n{toml}")
+        return repo
+
+    @staticmethod
+    def _reads(monkeypatch) -> list[tuple[str, int]]:
+        """
+        Record (file name, bytes requested) for every rule-file read.
+        """
+        reads = []
+        original = Path.open
+
+        class Recorder:
+            def __init__(self, path, stream):
+                self.path, self.stream = path, stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.stream.close()
+
+            def read(self, size):
+                reads.append((self.path.name, size))
+                return self.stream.read(size)
+
+        monkeypatch.setattr(Path, "open", lambda path, *a, **k: Recorder(path, original(path, *a, **k)))
+        return reads
+
+    def test_rules_up_to_the_limit_load(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULES_PER_LOAD", 3)
+        repo = self._repo(tmp_path, 'exclude = ["a", "b", "c"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.over_budget
+        assert [rule.pattern for rule in exclusions.rules] == ["a", "b", "c"]
+
+    def test_one_rule_past_the_limit_turns_exclusions_off(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULES_PER_LOAD", 3)
+        repo = self._repo(tmp_path, 'exclude = ["a", "b", "c", "d"]\n')
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert exclusions.over_budget and exclusions.rules == []
+        assert "more than 3 rules" in exclusions.config.warnings[0]
+
+    def test_gitattributes_rules_count_toward_the_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULES_PER_LOAD", 1)
+        repo = self._repo(tmp_path, "")
+        (repo / ".gitattributes").write_text("a linguist-generated\nb linguist-vendored\n")
+        assert Exclusions.load(str(repo), user_config=None).over_budget
+
+    def test_rule_files_up_to_the_limit_load(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULE_FILES_PER_LOAD", 2)
+        repo = self._repo(tmp_path, 'ignore_files = ["rules", "missing"]\n')
+        (repo / "rules").write_text("a.txt\n")
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.over_budget and exclusions.excludes("a.txt")
+
+    def test_repeated_entries_each_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULE_FILES_PER_LOAD", 2)
+        repo = self._repo(tmp_path, 'ignore_files = ["rules", "./rules", "rules"]\n')
+        (repo / "rules").write_text("a.txt\n")
+        reads = self._reads(monkeypatch)
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert exclusions.over_budget and not exclusions.excludes("a.txt")
+        # The third entry is refused before it is opened
+        assert [name for name, _ in reads].count("rules") == 2
+
+    def test_missing_entries_count_and_stop_before_reading(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULE_FILES_PER_LOAD", 2)
+        repo = self._repo(tmp_path, 'ignore_files = ["gone", "gone", "rules"]\n')
+        (repo / "rules").write_text("a.txt\n")
+        reads = self._reads(monkeypatch)
+        assert Exclusions.load(str(repo), user_config=None).over_budget
+        assert "rules" not in [name for name, _ in reads]
+
+    def test_files_up_to_the_byte_limit_load(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path, 'ignore_files = ["rules"]\n')
+        (repo / "rules").write_text("a.txt\n")
+        total = (repo / ".gvt.toml").stat().st_size + (repo / "rules").stat().st_size
+        monkeypatch.setattr("gvt.exclusions.MAX_RULE_BYTES_PER_LOAD", total)
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.over_budget and exclusions.excludes("a.txt")
+
+    def test_one_byte_past_the_limit_turns_exclusions_off(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path, 'ignore_files = ["rules"]\n')
+        (repo / "rules").write_text("a.txt\n" * 1000)
+        config_size = (repo / ".gvt.toml").stat().st_size
+        total = config_size + (repo / "rules").stat().st_size
+        monkeypatch.setattr("gvt.exclusions.MAX_RULE_BYTES_PER_LOAD", total - 1)
+        reads = self._reads(monkeypatch)
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert exclusions.over_budget
+        assert "over" in exclusions.config.warnings[0] and "KB" in exclusions.config.warnings[0]
+        # The read asks for what's left plus one byte, not the per-file cap
+        assert reads[-1] == ("rules", total - 1 - config_size + 1)
+
+    def test_fallback_shows_all_history(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_RULE_FILES_PER_LOAD", 1)
+        repo = self._repo(tmp_path, 'exclude = ["*.lock"]\nignore_files = ["gone", "gone"]\n')
+        sha = "a" * 40
+        (repo / ".git-blame-ignore-revs").write_text(sha + "\n")
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert exclusions.over_budget
+        assert exclusions.rules == [] and exclusions.ignore_revs == set()
+        assert exclusions.config.warnings[0].startswith("exclusion rules not loaded")
+        assert exclusions.suggest_preset("pnpm-lock.yaml") is None
+        commits = [_commit("a", [("x.lock", 5, 0)]), _commit("b", [("src.py", 1, 1)])]
+        result = exclusions.apply(commits)
+        assert result.commits == commits and result.excluded_lines == 0
+        text = describe(exclusions)
+        assert text.startswith("exclusions: off")
+        assert "exclusion rules not loaded" in text and "preset:" not in text
+
+    def test_rules_within_budget_keep_precedence_and_trust(self, tmp_path, monkeypatch):
+        # A skipped repo regex doesn't count toward the limit
+        monkeypatch.setattr("gvt.exclusions.MAX_RULES_PER_LOAD", 3)
+        repo = self._repo(
+            tmp_path, 'exclude = ["*.txt", "re:^x", "!keep.txt"]\nignore_files = ["rules"]\n'
+        )
+        (repo / "rules").write_text("keep.txt\n")
+        exclusions = Exclusions.load(str(repo), user_config=None)
+        assert not exclusions.over_budget
+        assert exclusions.excludes("b.txt") and exclusions.excludes("keep.txt")
+        assert not exclusions.excludes("xyz")
+        assert any("skipped 1 regex rule" in w for w in exclusions.config.warnings)
+
+    def test_repeated_presets_load_once(self, tmp_path):
+        (tmp_path / ".gvt.toml").write_text('[evolution]\npresets = ["lockfiles", "lockfiles"]\n')
+        assert load_config(str(tmp_path), None).presets == ["lockfiles"]

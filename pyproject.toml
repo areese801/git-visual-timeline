@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-visual-timeline"
-version = "0.3.0"
+version = "0.3.1"
 description = "Git Visual Timeline — a keyboard-driven TUI for exploring file commit history"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,7 +28,7 @@ classifiers = [
 keywords = ["git", "tui", "timeline", "diff", "blame", "textual"]
 dependencies = [
     "textual>=8.0,<9",
-    "gitpython>=3.1.41",
+    "gitpython>=3.2.1",
     "pygments>=2.17.0",
     "thefuzz[speedup]>=0.20.0",
     "tomli>=2.0; python_version < '3.11'",

@@ -84,19 +84,19 @@ class TestContextLines:
     def test_more_context(self):
         dv = DiffViewWidget()
         dv.context_lines = 3
-        dv.context_lines = min(999, dv.context_lines + 3)
+        dv.action_more_context()
         assert dv.context_lines == 6
 
     def test_less_context(self):
         dv = DiffViewWidget()
         dv.context_lines = 3
-        dv.context_lines = max(0, dv.context_lines - 3)
+        dv.action_less_context()
         assert dv.context_lines == 0
 
     def test_less_context_min_zero(self):
         dv = DiffViewWidget()
         dv.context_lines = 1
-        dv.context_lines = max(0, dv.context_lines - 3)
+        dv.action_less_context()
         assert dv.context_lines == 0
 
 
@@ -105,18 +105,6 @@ class TestViewMode:
         dv = DiffViewWidget()
         assert dv.view_mode == MODE_DIFF
 
-    def test_toggle_to_full(self):
-        dv = DiffViewWidget()
-        dv.view_mode = MODE_FULL
-        assert dv.view_mode == MODE_FULL
-
-    def test_toggle_back_to_diff(self):
-        dv = DiffViewWidget()
-        dv.view_mode = MODE_FULL
-        dv.view_mode = MODE_DIFF
-        assert dv.view_mode == MODE_DIFF
-
-
 class TestBlame:
     def test_blame_default_disabled(self):
         dv = DiffViewWidget()
@@ -124,9 +112,9 @@ class TestBlame:
 
     def test_toggle_blame(self):
         dv = DiffViewWidget()
-        dv.blame_enabled = not dv.blame_enabled
+        dv.action_toggle_blame()
         assert dv.blame_enabled is True
-        dv.blame_enabled = not dv.blame_enabled
+        dv.action_toggle_blame()
         assert dv.blame_enabled is False
 
     def test_set_blame_stores_data(self):
@@ -135,7 +123,7 @@ class TestBlame:
             ("abc1234", "Alice", "2025-01-01"),
             ("def5678", "Bob", "2025-01-02"),
         ]
-        dv._blame_data = blame_data
+        dv.set_blame(blame_data)
         assert len(dv._blame_data) == 2
 
     def test_get_blame_for_full_file_mode(self):
@@ -180,16 +168,11 @@ class TestFlashLines:
         dv = DiffViewWidget()
         assert len(dv._flash_lines) == 0
 
-    def test_flash_lines_can_be_set(self):
+    def test_flash_clears_highlight(self):
         dv = DiffViewWidget()
         dv._flash_lines = {0, 1, 2}
-        assert len(dv._flash_lines) == 3
-
-    def test_flash_lines_cleared(self):
-        dv = DiffViewWidget()
-        dv._flash_lines = {0, 1, 2}
-        dv._flash_lines = set()
-        assert len(dv._flash_lines) == 0
+        dv._clear_flash()
+        assert not dv._flash_lines
 
 
 class TestSearch:
@@ -205,38 +188,22 @@ class TestSearch:
         dv = DiffViewWidget()
         assert dv._search_match_lines == []
 
-    def test_apply_search_finds_lines(self):
-        """Test search logic without scroll_to (which needs an app context)."""
+    def test_apply_search_finds_lines(self, monkeypatch):
         dv = DiffViewWidget()
         dv._parse_diff(SAMPLE_DIFF)
-        # Manually search without calling _apply_search (which calls scroll_to)
-        import re as re_module
-        pattern = re_module.compile("new", re_module.IGNORECASE)
-        matches = [i for i, line in enumerate(dv._lines) if pattern.search(line.plain)]
-        assert len(matches) > 0
-
-    def test_apply_search_empty_clears(self):
-        dv = DiffViewWidget()
-        dv._search_query = "new"
-        dv._search_match_lines = [1, 2]
-        dv._search_highlight_lines = {1, 2}
-        # Applying empty search should clear
-        dv._search_query = ""
-        dv._search_pattern = None
-        dv._search_match_lines = []
-        dv._search_highlight_lines = set()
-        assert len(dv._search_match_lines) == 0
+        monkeypatch.setattr(dv, "scroll_to", lambda **kwargs: None)
+        dv._apply_search("NeW")
+        assert dv._search_match_lines == [3]
+        assert dv._search_highlight_lines == {3}
+        assert dv._search_match_idx == 0
+        dv._apply_search("")
+        assert not dv._search_match_lines and dv._search_pattern is None
 
     def test_apply_search_invalid_regex(self):
         dv = DiffViewWidget()
         dv._parse_diff(SAMPLE_DIFF)
-        import re as re_module
-        try:
-            re_module.compile("[invalid")
-            compiled = True
-        except re_module.error:
-            compiled = False
-        assert compiled is False  # Confirms invalid regex is rejected
+        dv._apply_search("[invalid")
+        assert dv._search_pattern is None and not dv._search_match_lines
 
     def test_exit_search_clears_state(self):
         dv = DiffViewWidget()
@@ -265,3 +232,31 @@ class TestSideBySide:
     def test_side_by_side_default_off(self):
         dv = DiffViewWidget()
         assert dv.side_by_side is False
+
+
+def test_metadata_is_excluded_from_blame_and_highlights():
+    view = DiffViewWidget()
+    diff = "diff --git a/f b/f\nindex 0..1\n--- a/f\n+++ b/f\n@@ -18 +19 @@\n-old\n+new"
+    view._parse_diff(diff)
+    view._parse_diff_line_numbers(diff)
+    assert (view._diff_line_to_file_line, view._full_file_add_lines) == ({6: 18}, {19})
+
+
+async def test_return_from_message_renders_identical_diff(fixture_app):
+    async with fixture_app.run_test():
+        view = fixture_app.query_one(DiffViewWidget)
+        view.set_diff(SAMPLE_DIFF)
+        view.set_message("Same commit")
+        view.set_diff(SAMPLE_DIFF)
+        assert "print('new')" in "".join(line.plain for line in view._lines)
+
+
+async def test_side_by_side_survives_full_file_toggle(fixture_app):
+    async with fixture_app.run_test():
+        view = fixture_app.query_one(DiffViewWidget)
+        view.set_diff(SAMPLE_DIFF)
+        view.set_full_file("content", SAMPLE_DIFF)
+        view.action_toggle_side_by_side()
+        view.action_toggle_full_file()
+        view.action_toggle_full_file()
+        assert "SIDE-BY-SIDE" in view._lines[0].plain

@@ -13,6 +13,7 @@ from git import Repo
 from textual.content import Content
 
 from gvt.app import GVTApp
+from gvt.textsafe import safe_name
 from gvt.git.repo import GitRepo
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.timeline import TimelineWidget
@@ -132,7 +133,8 @@ class TestGitBoundary:
         repo.git.commit("-m", "init")
         gvt = GitRepo(repo_dir)
         listed = gvt.get_tracked_files() + [f[0] for f in gvt.get_commit_files(gvt.get_all_commits()[0].hexsha)]
-        assert listed and all(_no_raw_controls(path) for path in listed)
+        assert listed == [f"evil{ESC_TITLE}.txt"] * 2
+        assert all(_no_raw_controls(safe_name(path)) for path in listed)
 
     def test_markup_named_paths_listed(self, hostile_repo):
         files = GitRepo(hostile_repo).get_tracked_files()
@@ -336,3 +338,11 @@ def test_far_future_commit_dates_do_not_crash(tmp_path):
     assert commits and all(c.date.year == 2100 for c in commits)
     # Blame shows local dates; the clamped instant is 2100-01-01 00:00 UTC
     assert gvt.get_blame("a.txt", commits[0].hexsha)[0][2] == commits[0].date.astimezone().strftime("%Y-%m-%d")
+
+
+def test_branch_name_is_safe_in_status_bar():
+    from gvt.widgets.status_bar import GVTStatusBar
+
+    bar = GVTStatusBar()
+    bar.update_info(branch="feature\u202etest")
+    assert _display_safe(bar._render_info_line().plain)

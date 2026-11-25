@@ -350,3 +350,7 @@ class TestParseTimeFilter:
     def test_garbage_means_no_cutoff(self):
         assert parse_time_filter("soon", self.NOW) is None
         assert parse_time_filter("xm", self.NOW) is None
+
+
+def test_out_of_range_relative_filter_is_invalid():
+    assert parse_time_filter("3000y", datetime.now(timezone.utc)) is None

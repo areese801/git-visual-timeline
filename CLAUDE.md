@@ -153,6 +153,14 @@ reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
     `MAX_PATTERN_SEGMENTS`), rules per source (`MAX_RULES_PER_SOURCE`) and
     matched paths (`MAX_MATCH_PATH`) are capped. Character-class ranges stay
     as (low, high) pairs; never expand them into sets.
+  - One `Exclusions.load` shares a `_LoadBudget` across every source:
+    `ignore_files` entries (`MAX_RULE_FILES_PER_LOAD`, repeats and missing
+    paths count), bytes read (`MAX_RULE_BYTES_PER_LOAD`) and accepted rules
+    (`MAX_RULES_PER_LOAD`). Each is checked before the next stat, read or
+    compile. Going past one raises `LoadBudgetExceeded`; `load` then returns
+    an `over_budget` `Exclusions` with no rules or ignore-revs (all history)
+    and a warning first in `config.warnings`. New rule sources must read
+    through `_read_small(..., budget)` and add rules through `add()`.
   - `rule_for` scans rules newest-first and stops at the first match (same
     result as "last match wins", much cheaper). `Glob` caches per-segment
     results. `apply(should_stop=...)` lets the screen's worker stop when it's

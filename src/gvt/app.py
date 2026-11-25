@@ -11,24 +11,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from git.exc import GitCommandError
-from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.markup import escape
-from textual.widget import Widget
 
 from gvt.git.cache import DiffCache
 from gvt.git.repo import CommitInfo, GitRepo
 from gvt.logging_setup import get_logger
-from gvt.textsafe import safe_text
+from gvt.textsafe import safe_name
 
-log = get_logger(__name__)
 from gvt.widgets.changed_files import ChangedFilesWidget, ChangedFileSelected, ChangedFileHighlighted
 from gvt.widgets.commit_bar import CommitMessageBar, ShowCommitDetail
-from gvt.widgets.diff_view import DiffContextChanged, DiffViewWidget
+from gvt.widgets.diff_view import MODE_FULL, DiffContextChanged, DiffViewWidget
 from gvt.widgets.evolution_screen import EvolutionScreen
 from gvt.widgets.file_tree import FileSelected, FileTreeWidget
 from gvt.widgets.modals import (
@@ -42,6 +39,9 @@ from gvt.widgets.modals import (
 )
 from gvt.widgets.status_bar import GVTStatusBar
 from gvt.widgets.timeline import CursorMoved, TimelineWidget
+
+
+log = get_logger(__name__)
 
 
 class GVTApp(App):
@@ -100,7 +100,8 @@ class GVTApp(App):
         self._q_count: int = 0
         self._q_timer = None
         self._all_commits_cache: list[CommitInfo] | None = None
-        self._preload_worker = None
+        self._selection_generation = 0
+        self._file_generation = 0
         # (file, sha) to put the timeline cursor on once that file loads
         self._pending_focus: tuple[str, str] | None = None
         self._pane_order = [
@@ -143,7 +144,7 @@ class GVTApp(App):
         self.query_one("#diff-pane", Container).border_title = "[4] Diff"
         self.query_one("#changed-files-pane", Container).border_title = "[5] Changed"
 
-        _, branch = self.git_repo.get_branches()
+        branch = self.git_repo.get_current_branch()
         status_bar = self.query_one(GVTStatusBar)
         status_bar.update_info(branch=branch)
         status_bar.set_focused_pane("file-tree-widget")
@@ -171,7 +172,6 @@ class GVTApp(App):
                 self.query_one(GVTStatusBar).set_focused_pane(node.id)
                 return
 
-
     def _last_file_path(self) -> Path:
         """Return the path to the last-file marker for this repo."""
         repo_hash = hashlib.md5(self.repo_path.encode()).hexdigest()
@@ -180,16 +180,20 @@ class GVTApp(App):
     def _save_last_file(self, rel_path: str) -> None:
         """Persist the last-selected file for this repo."""
         p = self._last_file_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(rel_path)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(os.fsencode(rel_path))
+        except OSError as error:
+            log.debug("Could not save last file: %s", error)
 
     def _read_last_file(self) -> str | None:
         """Read the last-selected file for this repo, or None."""
         p = self._last_file_path()
-        if p.is_file():
-            text = p.read_text().strip()
-            return text if text else None
-        return None
+        try:
+            value = os.fsdecode(p.read_bytes())
+        except OSError:
+            return None
+        return value if value and "\0" not in value else None
 
     @on(FileSelected)
     def on_file_selected(self, event: FileSelected) -> None:
@@ -206,10 +210,12 @@ class GVTApp(App):
 
     @on(ChangedFileHighlighted)
     def on_changed_file_highlighted(self, event: ChangedFileHighlighted) -> None:
-        self.query_one("#changed-files-pane", Container).border_title = f"[5] {escape(safe_text(event.path))}"
+        self.query_one("#changed-files-pane", Container).border_title = f"[5] {escape(safe_name(event.path))}"
 
     def _load_untracked_file(self, file_path: str) -> None:
         """Show an untracked file as a read-only preview."""
+        self._selection_generation += 1
+        self._file_generation += 1
         self.current_file = file_path
         self.current_commits = []
 
@@ -223,35 +229,30 @@ class GVTApp(App):
         commit_bar.set_commits(None, None)
         changed_files.clear()
 
-        # Show file content as preview
         content = self.git_repo.get_file_content(file_path)
         if content:
-            diff_view.set_diff("")
-            diff_view.set_message("")
-            # Build a simple preview with line numbers
-            lines = []
-            for i, line_text in enumerate(content.split("\n"), 1):
-                t = Text()
-                t.append(f"{i:>4} ", style="#565f89")
-                t.append(line_text, style="#c0caf5")
-                lines.append(t)
-            diff_view._lines = lines
-            diff_view._hunk_positions = []
-            diff_view.virtual_size = diff_view.size.with_height(max(len(lines), 1))
-            diff_view.scroll_home(animate=False)
-            diff_view.refresh()
+            diff_view.set_preview(content)
         else:
             diff_view.set_message("Unable to read file")
 
-        _, branch = self.git_repo.get_branches()
+        branch = self.git_repo.get_current_branch()
         status_bar.update_info(file_path=file_path, branch=branch)
         self.query_one("#timeline-pane", Container).border_title = "[2] Timeline"
-        self.query_one("#diff-pane", Container).border_title = f"[4] Preview {escape(safe_text(file_path))} (untracked)"
+        self.query_one("#diff-pane", Container).border_title = f"[4] Preview {escape(safe_name(file_path))} (untracked)"
         self.query_one("#changed-files-pane", Container).border_title = "[5] Changed"
 
         # Focus the diff pane so user can scroll the preview
         diff_view.focus()
         self._current_pane_idx = 3
+
+    def _clear_selection(self, file_path: str, message: str) -> None:
+        self._selection_generation += 1
+        self.query_one(CommitMessageBar).set_commits(None, None)
+        self.query_one(ChangedFilesWidget).clear()
+        self.query_one(DiffViewWidget).set_message(message)
+        self.query_one("#changed-files-pane", Container).border_title = "[5] Changed"
+        self.query_one("#diff-pane", Container).border_title = "[4] Diff"
+        self.query_one(GVTStatusBar).update_info(file_path, branch=self.git_repo.get_current_branch())
 
     def _load_file(self, file_path: str, focus_sha: str | None = None) -> None:
         """
@@ -261,13 +262,20 @@ class GVTApp(App):
         :param focus_sha: Commit to put the timeline cursor on once loaded
             (defaults to the newest commit).
         """
+        self._file_generation += 1
         self.current_file = file_path
+        self.current_commits = []
+        self.query_one("#timeline-pane", Container).border_title = "[2] Timeline"
+        self.query_one(TimelineWidget).set_commits([])
+        self._clear_selection(file_path, "Loading history…")
         self._pending_focus = (file_path, focus_sha) if focus_sha else None
         self.notify("Loading history...", timeout=10)
-        self._do_load_file(file_path)
+        self._do_load_file(file_path, self._file_generation)
 
     @work(thread=True)
-    def _do_load_file(self, file_path: str) -> None:
+    def _do_load_file(
+        self, file_path: str, generation: int, refresh: bool = False
+    ) -> None:
         """Load file commits in background thread."""
         commits = self.git_repo.get_file_commits(file_path)
 
@@ -289,31 +297,32 @@ class GVTApp(App):
             except GitCommandError as e:
                 log.warning("WIP probe for %s failed: %s", file_path, e)
 
-        self.call_from_thread(self._apply_loaded_file, file_path, commits)
+        self.call_from_thread(self._apply_loaded_file, file_path, commits, generation, refresh)
 
-    def _apply_loaded_file(self, file_path: str, commits: list[CommitInfo]) -> None:
+    def _apply_loaded_file(
+        self,
+        file_path: str,
+        commits: list[CommitInfo],
+        generation: int,
+        refresh: bool = False,
+    ) -> None:
         """Apply loaded commits to the UI (runs on main thread)."""
+        if self._file_generation != generation:
+            return
         self.clear_notifications()
 
-        # Guard against stale loads (user may have selected a different file)
-        if self.current_file != file_path:
-            return
-
-        self.current_commits = commits
-
         timeline = self.query_one("#timeline-widget", TimelineWidget)
-        commit_bar = self.query_one("#commit-bar", CommitMessageBar)
-        diff_view = self.query_one("#diff-view", DiffViewWidget)
-        changed_files = self.query_one("#changed-files", ChangedFilesWidget)
-        status_bar = self.query_one(GVTStatusBar)
-
-        if not self.current_commits:
-            timeline.set_commits([])
-            commit_bar.set_commits(None, None)
-            diff_view.set_message("No commits found for this file")
-            changed_files.clear()
-            _, branch = self.git_repo.get_branches()
-            status_bar.update_info(file_path=file_path, branch=branch)
+        if refresh:
+            timeline.refresh_commits(commits)
+            self.current_commits = timeline.commits
+            if self.current_commits:
+                self._update_from_timeline(timeline, file_path)
+            else:
+                self._clear_selection(file_path, "No commits in this period")
+            return
+        self.current_commits = commits
+        if not commits:
+            self._clear_selection(file_path, "No commits found for this file")
             return
 
         timeline.set_commits(self.current_commits)
@@ -361,29 +370,30 @@ class GVTApp(App):
         right_commit = self.current_commits[right_idx] if right_idx < len(self.current_commits) else None
         commit_bar.set_commits(left_commit, right_commit)
 
-        # Update dynamic pane titles
         current_commit = self.current_commits[timeline.cursor]
         if current_commit.is_wip:
-            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(safe_text(file_path))} (WIP)"
+            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(safe_name(file_path))} (WIP)"
             self.query_one("#changed-files-pane", Container).border_title = "[5] Uncommitted changes"
         else:
-            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(safe_text(file_path))}"
+            self.query_one("#diff-pane", Container).border_title = f"[4] Diff {escape(safe_name(file_path))}"
             self.query_one("#changed-files-pane", Container).border_title = f"[5] Also changed on {current_commit.short_hash}"
 
-        self._load_diff(file_path, left_idx, right_idx)
-
-        # Update changed files panel (skip for WIP)
+        self._selection_generation += 1
+        generation = self._selection_generation
+        diff_view = self.query_one(DiffViewWidget)
+        diff_view.set_message("Loading diff…")
+        self.query_one(ChangedFilesWidget).clear()
+        self._load_diff(file_path, left_commit, right_commit, diff_view.context_lines, generation)
         if not current_commit.is_wip:
-            self._update_changed_files(current_commit)
-        else:
-            self.query_one("#changed-files", ChangedFilesWidget).clear()
+            self._update_changed_files(current_commit, generation)
+        if diff_view.blame_enabled and not right_commit.is_wip:
+            self._load_blame(
+                self._revision_path(file_path, right_commit),
+                right_commit.hexsha,
+                generation,
+            )
 
-        # Reload blame if enabled (skip for WIP)
-        diff_view = self.query_one("#diff-view", DiffViewWidget)
-        if diff_view.blame_enabled and right_commit and not right_commit.is_wip:
-            self._load_blame(file_path, right_commit.hexsha)
-
-        _, branch = self.git_repo.get_branches()
+        branch = self.git_repo.get_current_branch()
         if timeline.has_pins:
             pos = f"{left_idx + 1}→{right_idx + 1}/{len(self.current_commits)}"
         else:
@@ -397,83 +407,109 @@ class GVTApp(App):
             deletions=right_commit.deletions if right_commit else 0,
         )
 
-    @work(thread=True)
-    def _update_changed_files(self, commit: CommitInfo) -> None:
-        """Load files changed in the current commit."""
+    @staticmethod
+    def _revision_path(current_path: str, commit: CommitInfo) -> str:
+        return commit.files[0][0] if commit.files else current_path
+
+    def _apply_if_current(self, generation: int, callback, *args) -> None:
+        if self._selection_generation == generation:
+            callback(*args)
+
+    @work(thread=True, exclusive=True, group="changed-files")
+    def _update_changed_files(self, commit: CommitInfo, generation: int) -> None:
         files = self.git_repo.get_commit_files(commit.hexsha)
-        self.call_from_thread(
-            self.query_one("#changed-files", ChangedFilesWidget).set_files,
-            files,
+        self.call_from_thread(self._apply_if_current, generation, self._show_changed_files, files)
+
+    def _show_changed_files(self, files: list[tuple[str, int, int]]) -> None:
+        self.query_one(ChangedFilesWidget).set_files(files)
+
+    def _commit_diff(
+        self, file_path: str, left: CommitInfo, right: CommitInfo, context: int
+    ) -> str:
+        left_path = self._revision_path(file_path, left)
+        right_path = self._revision_path(file_path, right)
+        return self.diff_cache.get_or_compute(
+            file_path,
+            f"{left.hexsha}_ctx{context}",
+            right.hexsha,
+            lambda: self.git_repo.get_diff(
+                right_path, left.hexsha, right.hexsha, context, previous_path=left_path
+            ),
         )
 
-    @work(thread=True)
-    def _load_diff(self, file_path: str, left_idx: int, right_idx: int) -> None:
-        """Load diff between two commits, using cache."""
-        commits = list(self.current_commits)
-        if not commits:
-            return
-
-        if left_idx >= len(commits) or right_idx >= len(commits):
-            return
-
-        if self.current_file != file_path:
-            return
-
-        left = commits[left_idx]
-        right = commits[right_idx]
-        diff_view = self.query_one("#diff-view", DiffViewWidget)
-
+    @work(thread=True, exclusive=True, group="diff")
+    def _load_diff(
+        self,
+        file_path: str,
+        left: CommitInfo,
+        right: CommitInfo,
+        context: int,
+        generation: int,
+    ) -> None:
+        diff = ""
+        message = "No changes between selected commits for this file"
         if left.hexsha == right.hexsha:
-            self.call_from_thread(diff_view.set_message, "Same commit selected for both cursors")
-            return
-
-        context = diff_view.context_lines
-        cache_key_suffix = f"_ctx{context}"
-
-        # Determine if either endpoint is WIP (working tree)
-        if right.is_wip:
-            # Diff from left commit to working tree
-            diff = self.diff_cache.get_or_compute(
-                file_path,
-                left.hexsha + cache_key_suffix,
-                "WIP",
-                lambda: self.git_repo.get_diff_to_working_tree(file_path, left.hexsha, context_lines=context),
-            )
+            message = "Same commit selected for both cursors"
         elif left.is_wip:
-            # Shouldn't normally happen, but handle gracefully
-            self.call_from_thread(diff_view.set_message, "Cannot diff from WIP backwards")
-            return
-        else:
-            diff = self.diff_cache.get_or_compute(
+            message = "Cannot diff from WIP backwards"
+        elif right.is_wip:
+            diff = self.git_repo.get_diff_to_working_tree(
                 file_path,
-                left.hexsha + cache_key_suffix,
-                right.hexsha,
-                lambda: self.git_repo.get_diff(file_path, left.hexsha, right.hexsha, context_lines=context),
+                left.hexsha,
+                context,
+                previous_path=self._revision_path(file_path, left),
+            )
+        else:
+            diff = self._commit_diff(file_path, left, right, context)
+        needs_content = self.call_from_thread(
+            self._show_diff, generation, context, diff, message
+        )
+        if needs_content:
+            content = (
+                self.git_repo.get_file_content(file_path)
+                if right.is_wip
+                else self.git_repo.get_file_at_commit(
+                    self._revision_path(file_path, right), right.hexsha
+                )
+            )
+            self.call_from_thread(
+                self._show_content, generation, context, content, diff
             )
 
-        if not diff:
-            self.call_from_thread(diff_view.set_message, "No changes between selected commits for this file")
+    def _show_diff(
+        self, generation: int, context: int, diff: str, message: str
+    ) -> bool:
+        view = self.query_one(DiffViewWidget)
+        if generation != self._selection_generation or context != view.context_lines:
+            return False
+        if diff:
+            view.set_diff(diff)
+            timeline = self.query_one(TimelineWidget)
+            self._preload_adjacent_diffs(
+                self.current_file,
+                timeline.cursor,
+                view.context_lines,
+                self.current_commits,
+            )
+            return view.view_mode == MODE_FULL
         else:
-            self.call_from_thread(diff_view.set_diff, diff)
-            if right.is_wip:
-                full_content = self.git_repo.get_file_content(file_path)
-            else:
-                full_content = self.git_repo.get_file_at_commit(file_path, right.hexsha)
-            self.call_from_thread(diff_view.set_full_file, full_content, diff)
+            view.set_message(message)
+            return False
 
-        # Fire preload for adjacent diffs after main diff is done
-        timeline = self.query_one("#timeline-widget", TimelineWidget)
-        cursor_idx = timeline.cursor
-        self.call_from_thread(self._preload_adjacent_diffs, file_path, cursor_idx, context)
+    def _show_content(
+        self, generation: int, context: int, content: str, diff: str
+    ) -> None:
+        view = self.query_one(DiffViewWidget)
+        if generation == self._selection_generation and context == view.context_lines:
+            view.set_full_file(content, diff)
 
     @work(thread=True, exclusive=True, group="preload")
-    def _preload_adjacent_diffs(self, file_path: str, cursor_idx: int, context: int) -> None:
+    def _preload_adjacent_diffs(
+        self, file_path: str, cursor_idx: int, context: int, commits: list[CommitInfo]
+    ) -> None:
         """Preload diffs for adjacent timeline positions into the cache."""
-        commits = list(self.current_commits)
         if not commits or len(commits) < 2:
             return
-
-        cache_key_suffix = f"_ctx{context}"
 
         # Adjacent pairs to preload: (N-1 → N) and (N → N+1)
         pairs = []
@@ -483,7 +519,6 @@ class GVTApp(App):
             pairs.append((cursor_idx, cursor_idx + 1))
 
         for left_idx, right_idx in pairs:
-            # Check if we've been superseded (cursor moved)
             if self.current_file != file_path:
                 return
 
@@ -493,25 +528,20 @@ class GVTApp(App):
             if left.hexsha == right.hexsha or left.is_wip or right.is_wip:
                 continue
 
-            left_key = left.hexsha + cache_key_suffix
-            if self.diff_cache.has(file_path, left_key, right.hexsha):
-                continue
-
-            self.diff_cache.get_or_compute(
-                file_path,
-                left_key,
-                right.hexsha,
-                lambda l=left, r=right: self.git_repo.get_diff(
-                    file_path, l.hexsha, r.hexsha, context_lines=context
-                ),
-            )
+            self._commit_diff(file_path, left, right, context)
 
     @on(DiffContextChanged)
     def on_diff_context_changed(self, event: DiffContextChanged) -> None:
         if not self.current_file or not self.current_commits:
             return
         timeline = self.query_one("#timeline-widget", TimelineWidget)
-        self._load_diff(self.current_file, timeline.left_cursor, timeline.right_cursor)
+        self._load_diff(
+            self.current_file,
+            self.current_commits[timeline.left_cursor],
+            self.current_commits[timeline.right_cursor],
+            event.context_lines,
+            self._selection_generation,
+        )
 
     @on(ShowCommitDetail)
     def on_show_commit_detail(self, event: ShowCommitDetail) -> None:
@@ -621,12 +651,12 @@ class GVTApp(App):
             if result is None:
                 return
             timeline.apply_time_filter(result)
-            # Update display
             if self.current_file:
                 self.current_commits = timeline.commits
                 if self.current_commits:
                     self._update_from_timeline(timeline, self.current_file)
-                # Show filter in timeline pane title
+                else:
+                    self._clear_selection(self.current_file, "No commits in this period")
                 if result:
                     self.query_one("#timeline-pane", Container).border_title = f"[2] Timeline (since {result})"
                 else:
@@ -677,7 +707,7 @@ class GVTApp(App):
                 callback=on_file_selected,
             )
 
-        self.push_screen(CommitSearchModal(all_commits), callback=on_commit_selected)
+        self.push_screen(CommitSearchModal(all_commits, title="Search recent commits (up to 500, excluding merges)"), callback=on_commit_selected)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """
@@ -714,7 +744,7 @@ class GVTApp(App):
         path, is_file = scope or (".", False)
         if path == ".":
             return ".", "whole repo", False, note
-        label = safe_text(path) if is_file else safe_text(path.rstrip("/")) + "/"
+        label = safe_name(path) if is_file else safe_name(path.rstrip("/")) + "/"
         return path, label, is_file, note
 
     def action_evolution(self) -> None:
@@ -779,7 +809,7 @@ class GVTApp(App):
             timeline = self.query_one("#timeline-widget", TimelineWidget)
             right_commit = self.current_commits[timeline.right_cursor]
             if not right_commit.is_wip:
-                self._load_blame(self.current_file, right_commit.hexsha)
+                self._load_blame(self._revision_path(self.current_file, right_commit), right_commit.hexsha, self._selection_generation)
 
     def action_flash_last_author(self) -> None:
         """Show who last modified the file and contributor breakdown."""
@@ -849,10 +879,21 @@ class GVTApp(App):
             log.warning("editor %s exited with code %d", editor, result.returncode)
             self.notify(f"Editor exited with code {result.returncode}", timeout=2)
 
-    @work(thread=True)
-    def _load_blame(self, file_path: str, commit_sha: str) -> None:
+        elif self.is_running:
+            if self.current_file in self.query_one(FileTreeWidget).untracked_files:
+                self._load_untracked_file(self.current_file)
+            else:
+                self._file_generation += 1
+                self._do_load_file(
+                    self.current_file, self._file_generation, refresh=True
+                )
+
+    @work(thread=True, exclusive=True, group="blame")
+    def _load_blame(self, file_path: str, commit_sha: str, generation: int) -> None:
         blame_data = self.git_repo.get_blame(file_path, commit_sha)
         self.call_from_thread(
-            self.query_one("#diff-view", DiffViewWidget).set_blame,
-            blame_data,
+            self._apply_if_current, generation, self._show_blame, blame_data
         )
+
+    def _show_blame(self, blame: list[tuple[str, str, str]]) -> None:
+        self.query_one(DiffViewWidget).set_blame(blame)

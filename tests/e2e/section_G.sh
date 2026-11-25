@@ -13,7 +13,7 @@ trap 'cleanup_sessions; rm -rf "$TMPDIR_G"' EXIT
 FIXTURE_REPO="${TMPDIR_G}/test-repo"
 make_repo "$FIXTURE_REPO"
 
-LOG_DIR="${HOME}/.config/gvt"
+LOG_DIR="${_E2E_HOME}/.config/gvt"
 LOG_FILE="${LOG_DIR}/gvt.log"
 
 echo "── Section G: Logging ──"
@@ -47,8 +47,11 @@ fi
 # ── G2: GVT_LOG_LEVEL=DEBUG produces debug lines ────────────────────────
 rm -f "$LOG_FILE" "$LOG_FILE.1" "$LOG_FILE.2"
 
+G2_REPO="${TMPDIR_G}/g2-repo"
+make_repo "$G2_REPO"
+git -C "$G2_REPO" checkout --quiet --detach HEAD~1
 SESSION="g2_debug"
-tmux_spawn "$SESSION" "cd $FIXTURE_REPO && GVT_LOG_LEVEL=DEBUG $GVT file.py"
+tmux_spawn "$SESSION" "cd $G2_REPO && GVT_LOG_LEVEL=DEBUG $GVT file.py"
 sleep 5
 if session_alive "$SESSION"; then
     send_keys "$SESSION" "qq"
@@ -97,7 +100,7 @@ rm -f "$LOG_FILE" "$LOG_FILE.1" "$LOG_FILE.2"
 mkdir -p "$LOG_DIR"
 
 # Force-write >512KB to the log using gvt's own logging
-"$PYTHON" -c "
+HOME="$_E2E_HOME" "$PYTHON" -c "
 import gvt.logging_setup as l
 log = l.get_logger('gvt.rotation_test')
 # Write enough to trigger rotation (512KB = 524288 bytes)
@@ -122,37 +125,22 @@ fi
 # ── G5: Read-only log directory — gvt should not crash ───────────────────
 rm -f "$LOG_FILE" "$LOG_FILE.1" "$LOG_FILE.2"
 
-# Create a read-only version of the config dir
-READONLY_CONFIG="${TMPDIR_G}/ro-config"
-mkdir -p "$READONLY_CONFIG/gvt"
-chmod 444 "$READONLY_CONFIG/gvt"
-
 SESSION="g5_readonly"
-# Override XDG_CONFIG_HOME to use our read-only dir
-# But gvt uses Path.home() / ".config" — so we need HOME override
 FAKE_HOME="${TMPDIR_G}/fake-home"
 mkdir -p "$FAKE_HOME/.config/gvt"
 chmod 444 "$FAKE_HOME/.config/gvt"
 
 tmux_spawn "$SESSION" "cd $FIXTURE_REPO && HOME=$FAKE_HOME $GVT file.py"
-sleep 4
-
-if session_alive "$SESSION"; then
-    log_result "G5" pass "gvt did not crash with read-only log directory"
-    send_keys "$SESSION" "qq"
-    wait_for_exit "$SESSION" 5
+if wait_for_content "$SESSION" "[2] Timeline" 10; then
+    log_result "G5" pass "timeline visible with read-only home"
 else
-    capture_pane "$SESSION"
-    if echo "$PANE_TEXT" | grep -qi "traceback\|permission\|error" 2>/dev/null; then
-        log_result "G5" fail "gvt crashed with read-only log dir: $(echo "$PANE_TEXT" | head -5)"
-    else
-        log_result "G5" pass "gvt exited cleanly with read-only log dir"
-    fi
+    log_result "G5" fail "timeline did not appear with read-only home"
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 # Restore permissions for cleanup
 chmod 755 "$FAKE_HOME/.config/gvt" 2>/dev/null || true
-chmod 755 "$READONLY_CONFIG/gvt" 2>/dev/null || true
 
 echo "── Section G complete ──"
+
+(( FAIL_COUNT == 0 ))
