@@ -138,7 +138,9 @@ reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
   per-file details, and the largest kept files. `Exclusions.layers` records how
   each layer resolved; the `X` details modal (`ExclusionDetailsModal`) and
   `gvt --show-rules` (`describe()`) render these.
-- Config problems become `config.warnings`; they never raise.
+- Config problems become `config.warnings`; they never raise. `load` trims them
+  with `_trim_warnings` (`MAX_WARNINGS`, `MAX_WARNING_LENGTH`), and the
+  Evolution screen toasts only the first `MAX_WARNING_TOASTS`; `X` lists the rest.
 - **Rules from files inside the repo are untrusted** (the repo may come from a
   stranger). Keep these properties, each covered by `TestUntrustedRepoRules`:
   - Globs are matched by the linear-time `Glob` matcher, never compiled to a
