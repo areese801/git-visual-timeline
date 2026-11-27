@@ -3,8 +3,10 @@
 from datetime import date, datetime, timedelta, timezone
 
 from gvt.evolution import (
+    HOTSPOT_MIN_HALF_LIFE_DAYS,
     UP_BLOCKS,
     PeriodStats,
+    age_label,
     axis_labels,
     bar_cells,
     bin_periods,
@@ -12,6 +14,8 @@ from gvt.evolution import (
     calendar_window,
     choose_granularity,
     frequency_layout,
+    hbar,
+    hotspot_half_life,
     level_for,
     local_day,
     month_labels,
@@ -22,6 +26,7 @@ from gvt.evolution import (
     periods_before,
     place_labels,
     quantile_levels,
+    rank_hotspots,
     relative_churn,
     running_sizes,
     size_axis,
@@ -313,3 +318,86 @@ class TestVolume:
         assert relative_churn(50, 1000, 1000) == 0.05
         assert relative_churn(323, 0, 302) == 323 / 302
         assert relative_churn(10, 0, 0) is None
+
+
+def _touch(day: date, *paths: str, adds: int = 2, dels: int = 1) -> CommitInfo:
+    commit = _commit(datetime(day.year, day.month, day.day, 12, tzinfo=UTC), adds * len(paths), dels * len(paths))
+    commit.files = [(path, adds, dels) for path in paths]
+    return commit
+
+
+class TestHotspots:
+    TODAY = date(2026, 1, 21)
+
+    def test_half_life_is_a_quarter_of_the_span(self):
+        assert hotspot_half_life(date(2025, 1, 1), date(2026, 1, 1)) == 365 / 4
+
+    def test_half_life_has_a_floor(self):
+        assert hotspot_half_life(date(2026, 1, 1), self.TODAY) == HOTSPOT_MIN_HALF_LIFE_DAYS
+        # A start after today (clock skew) still gets the floor
+        assert hotspot_half_life(date(2026, 2, 1), self.TODAY) == HOTSPOT_MIN_HALF_LIFE_DAYS
+
+    def test_weight_halves_each_half_life(self):
+        commits = [_touch(date(2026, 1, d), "a.py") for d in (21, 11, 1)]
+        [spot] = rank_hotspots(commits, self.TODAY, half_life=10, tz=UTC)
+        assert spot.score == 1 + 0.5 + 0.25
+        assert (spot.commits, spot.recent_commits) == (3, 1)
+        assert (spot.additions, spot.deletions) == (6, 3)
+        assert spot.last_change == datetime(2026, 1, 21, 12, tzinfo=UTC)
+
+    def test_future_commits_weigh_one(self):
+        [spot] = rank_hotspots([_touch(date(2026, 3, 1), "a.py")], self.TODAY, half_life=10, tz=UTC)
+        assert spot.score == 1
+        assert spot.recent_commits == 1
+
+    def test_recent_change_outranks_an_old_busy_file(self):
+        commits = [_touch(date(2026, 1, 1), "old.py") for _ in range(3)] + [_touch(self.TODAY, "new.py")]
+        ranked = rank_hotspots(commits, self.TODAY, half_life=10, tz=UTC)
+        assert [s.path for s in ranked] == ["new.py", "old.py"]  # 1.0 vs 0.75
+
+    def test_ties_go_to_more_commits_then_path(self):
+        commits = [
+            _touch(date(2026, 1, 11), "two.py"),
+            _touch(date(2026, 1, 11), "two.py"),
+            _touch(self.TODAY, "b.py", "a.py"),
+        ]
+        ranked = rank_hotspots(commits, self.TODAY, half_life=10, tz=UTC)
+        assert [s.path for s in ranked] == ["two.py", "a.py", "b.py"]  # all score 1.0
+
+    def test_keep_drops_paths_and_is_asked_once_per_path(self):
+        commits = [_touch(self.TODAY, "kept.py", "gone.py"), _touch(self.TODAY, "gone.py")]
+        asked = []
+
+        def keep(path: str) -> bool:
+            asked.append(path)
+            return path != "gone.py"
+
+        ranked = rank_hotspots(commits, self.TODAY, 10, keep, UTC)
+        assert [s.path for s in ranked] == ["kept.py"]
+        assert asked.count("gone.py") == 1
+
+    def test_binary_files_count_as_commits(self):
+        [spot] = rank_hotspots([_touch(self.TODAY, "logo.png", adds=0, dels=0)], self.TODAY, 10, tz=UTC)
+        assert (spot.commits, spot.additions, spot.deletions) == (1, 0, 0)
+
+    def test_no_commits(self):
+        assert rank_hotspots([], self.TODAY, 10) == []
+
+    def test_hbar(self):
+        assert hbar(1.0, 4) == "████"
+        assert hbar(0.5, 4) == "██  "
+        assert hbar(0.25, 2) == "▌ "
+        assert hbar(0.001, 4) == "▏   "  # anything above zero shows
+        assert hbar(0.0, 3) == "   "
+        assert hbar(2.0, 2) == "██"
+
+    def test_age_label(self):
+        today = self.TODAY
+        assert age_label(today, today) == "today"
+        assert age_label(today + timedelta(days=3), today) == "today"
+        assert age_label(today - timedelta(days=1), today) == "1d ago"
+        assert age_label(today - timedelta(days=13), today) == "13d ago"
+        assert age_label(today - timedelta(days=14), today) == "2w ago"
+        assert age_label(today - timedelta(days=60), today) == "2mo ago"
+        assert age_label(today - timedelta(days=729), today) == "24mo ago"
+        assert age_label(today - timedelta(days=730), today) == "2y ago"
