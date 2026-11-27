@@ -32,6 +32,9 @@ from gvt.widgets.timeline import parse_time_filter
 
 log = get_logger(__name__)
 
+# Config warnings shown as toasts; X lists all of them
+MAX_WARNING_TOASTS = 3
+
 # Tab pane id -> view widget id, in tab order
 VIEWS = {
     "calendar": "calendar-view",
@@ -314,9 +317,18 @@ class EvolutionScreen(Screen):
         if not self._warned:
             # The rules don't change when widening, so warn once per screen
             self._warned = True
-            for warning in exclusions.config.warnings:
+            warnings = exclusions.config.warnings
+            for warning in warnings[:MAX_WARNING_TOASTS]:
                 self.notify(
                     safe_text(warning), title="Exclusion rules", severity="warning", timeout=6, markup=False
+                )
+            if len(warnings) > MAX_WARNING_TOASTS:
+                self.notify(
+                    f"{len(warnings) - MAX_WARNING_TOASTS} more; press X to see them all",
+                    title="Exclusion rules",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
                 )
         self._show()
 

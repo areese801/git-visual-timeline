@@ -240,6 +240,30 @@ class TestEvolutionHostile:
             await pilot.pause()
             assert app.is_running
 
+    async def test_config_full_of_problems_shows_a_few_toasts(self, hostile_repo, monkeypatch):
+        from gvt.widgets.evolution_screen import MAX_WARNING_TOASTS, EvolutionScreen
+
+        presets = ", ".join(f'"p{i}"' for i in range(20_000))
+        _write(hostile_repo, ".gvt.toml", f"[evolution]\npresets = [{presets}]\n")
+        app = GVTApp(repo_path=hostile_repo)
+        titles = []
+        original = app.notify
+        monkeypatch.setattr(
+            app, "notify", lambda msg, **k: titles.append(k.get("title")) or original(msg, **k)
+        )
+        async with app.run_test(size=self.SIZE) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("v")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, EvolutionScreen)
+            assert titles.count("Exclusion rules") == MAX_WARNING_TOASTS + 1
+            await pilot.press("X")
+            await pilot.pause()
+            assert "more warnings not shown" in app.screen.build_text().plain
+
     def test_rule_text_with_control_characters_is_printed_safely(self, hostile_repo):
         from gvt.exclusions import Exclusions, describe
 

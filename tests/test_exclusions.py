@@ -7,6 +7,8 @@ import pytest
 
 from gvt.exclusions import (
     DEFAULT_PRESETS,
+    MAX_WARNING_LENGTH,
+    MAX_WARNINGS,
     PRESETS,
     Exclusions,
     describe,
@@ -818,3 +820,32 @@ class TestLoadBudget:
     def test_repeated_presets_load_once(self, tmp_path):
         (tmp_path / ".gvt.toml").write_text('[evolution]\npresets = ["lockfiles", "lockfiles"]\n')
         assert load_config(str(tmp_path), None).presets == ["lockfiles"]
+
+
+class TestWarningLimits:
+    """
+    A config full of problems yields a bounded list of short warnings.
+    """
+
+    @staticmethod
+    def _presets(tmp_path: Path, names: list[str]) -> Exclusions:
+        listed = ", ".join(f'"{name}"' for name in names)
+        (tmp_path / ".gvt.toml").write_text(f"[evolution]\npresets = [{listed}]\n")
+        return Exclusions.load(str(tmp_path), user_config=None)
+
+    def test_warnings_up_to_the_limit_are_all_kept(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gvt.exclusions.MAX_WARNINGS", 3)
+        warnings = self._presets(tmp_path, ["p0", "p1", "p2"]).config.warnings
+        assert warnings == [f".gvt.toml: unknown preset 'p{i}'" for i in range(3)]
+
+    def test_warnings_past_the_limit_become_a_count(self, tmp_path):
+        warnings = self._presets(tmp_path, [f"p{i}" for i in range(20_000)]).config.warnings
+        assert len(warnings) == MAX_WARNINGS + 1
+        assert warnings[0] == ".gvt.toml: unknown preset 'p0'"
+        assert warnings[MAX_WARNINGS - 1] == f".gvt.toml: unknown preset 'p{MAX_WARNINGS - 1}'"
+        assert warnings[-1] == f"{20_000 - MAX_WARNINGS} more warnings not shown"
+
+    def test_long_warnings_are_shortened(self, tmp_path):
+        warnings = self._presets(tmp_path, ["p" * 100_000]).config.warnings
+        assert len(warnings[0]) == MAX_WARNING_LENGTH
+        assert warnings[0].startswith(".gvt.toml: unknown preset 'ppp") and warnings[0].endswith("…")

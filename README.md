@@ -27,6 +27,8 @@ gvt path/to/file.py
 gvt --show-rules
 ```
 
+Looking at someone else's project? Open gvt in a fresh `git clone` of it, not in a directory that came with its own `.git`. See [Untrusted repositories](#untrusted-repositories).
+
 ## Layout
 
 gvt uses a 5-pane layout, each accessible by number key:
@@ -267,7 +269,7 @@ Exclusion rules can come from files inside the repo you're viewing: `.gvt.toml`,
 - **Limits:** files over 256 KB are skipped; each config or rule file contributes at most 1,000 rules; patterns over 256 characters or 16 path segments are skipped; and paths longer than 1,024 characters or nested more than 64 folders deep are never excluded.
 - **Totals across all sources:** at most 100 `ignore_files` entries (repeats and missing files count), 2 MB read from config and rule files, and 5,000 rules. Past any of these, gvt loads no exclusion rules, shows all history, and says so in a warning in `v` and `gvt --show-rules`.
 - **A time budget:** if applying the rules to a scope takes more than 5 seconds, gvt shows everything for that scope and says so, instead of keeping you waiting. Leaving the Evolution screen (or widening it) also stops the work.
-- **Malformed config** (wrong types, deeply nested TOML) becomes a warning, never a crash.
+- **Malformed config** (wrong types, deeply nested TOML) becomes a warning, never a crash. gvt keeps the first 50 warnings, each up to 300 characters, and counts the rest; `v` shows the first 3 as pop-ups and `X` lists them all.
 
 `trust_repo_regex` applies to every repo you open. Turn it on only if you mostly view your own repos, or keep your ignore files to globs.
 

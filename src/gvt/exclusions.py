@@ -72,6 +72,10 @@ MAX_RULE_FILE_BYTES = 256_000
 MAX_RULE_FILES_PER_LOAD = 100  # ignore_files entries, counting repeats and missing paths
 MAX_RULE_BYTES_PER_LOAD = 2_000_000  # read from config, rule and ignore-revs files
 MAX_RULES_PER_LOAD = 5000
+# Warnings kept per load (the rest become one count) and their length, so a
+# config full of problems can't flood the screen with thousands of messages
+MAX_WARNINGS = 50
+MAX_WARNING_LENGTH = 300
 
 
 def user_config_path() -> Path:
@@ -416,6 +420,22 @@ def _inside(root: str, path: Path | str) -> bool:
         return False
 
 
+def _trim_warnings(warnings: list[str]) -> None:
+    """
+    Keep the first MAX_WARNINGS warnings, each at most MAX_WARNING_LENGTH
+    characters, and replace the rest with one warning that counts them.
+
+    :param warnings: The list to trim in place.
+    """
+    extra = len(warnings) - MAX_WARNINGS
+    del warnings[MAX_WARNINGS:]
+    for i, warning in enumerate(warnings):
+        if len(warning) > MAX_WARNING_LENGTH:
+            warnings[i] = warning[: MAX_WARNING_LENGTH - 1] + "…"
+    if extra > 0:
+        warnings.append(f"{extra} more warnings not shown")
+
+
 class LoadBudgetExceeded(Exception):
     """
     Raised when one Exclusions.load goes past a MAX_*_PER_LOAD total.
@@ -680,7 +700,7 @@ class Exclusions:
         is shown) and the result is marked `over_budget` with a warning.
         """
         try:
-            return cls._load(repo_root, user_config, _LoadBudget())
+            exclusions = cls._load(repo_root, user_config, _LoadBudget())
         except LoadBudgetExceeded as e:
             config = ExclusionConfig(presets=[], use_gitattributes=False, ignore_revs="")
             config.warnings.append(
@@ -688,7 +708,9 @@ class Exclusions:
                 "List fewer or smaller rule files in your config or .gvt.toml"
             )
             layers = [LayerStatus("Rule loading", f"stopped: {e}; exclusions are off", False)]
-            return cls([], set(), config, layers, over_budget=True)
+            exclusions = cls([], set(), config, layers, over_budget=True)
+        _trim_warnings(exclusions.config.warnings)
+        return exclusions
 
     @classmethod
     def _load(cls, repo_root: str, user_config: Path | None, budget: _LoadBudget) -> Exclusions:
