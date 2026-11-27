@@ -63,7 +63,7 @@ make help           # Show all targets
 | `src/gvt/evolution.py` | Pure binning/layout math for the Evolution views (no git, no Textual) |
 | `src/gvt/exclusions.py` | Evolution exclusion rules: presets, `.gitattributes`, config files, filtering |
 | `src/gvt/widgets/evolution_screen.py` | Evolution screen (`v`): tabs, data loading, authored/everything, jump into history |
-| `src/gvt/widgets/calendar_view.py` / `frequency_view.py` | The two Evolution views; `evolution_common.py` holds their base class and `PeriodChosen` |
+| `src/gvt/widgets/calendar_view.py` / `frequency_view.py` / `hotspots_view.py` | The three Evolution views; `evolution_common.py` holds their base class, `PeriodChosen` and `FileChosen` |
 | `src/gvt/widgets/` | All TUI widgets (timeline, diff_view, file_tree, modals, calendar_view, frequency_view, etc.) |
 | `src/gvt/styles/app.tcss` | Textual CSS — Tokyo Night color scheme |
 
@@ -77,8 +77,8 @@ make help           # Show all targets
 ## Evolution Screen
 
 `v` opens a full-screen view of how a file, directory or the whole repo changed
-over time: a contribution calendar and a frequency chart (split adds/deletes, or
-`m` volume mode: size over time above churn). User-facing behavior and the config
+over time: a contribution calendar, a frequency chart (split adds/deletes, or
+`m` volume mode: size over time above churn) and a hotspots ranking. User-facing behavior and the config
 reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
 
 ### Data flow
@@ -91,7 +91,7 @@ reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
    `git log --no-merges --numstat -- <scope>`. It returns newest-first `CommitInfo`
    objects whose `files` hold per-file `(path, adds, dels)`, with renames resolved
    to the new path and binary files as 0. Results are LRU-cached by `(scope, HEAD)`.
-   The worker also loads tags, the repo's first commit date, and
+   The worker also loads tags, the repo's first commit date, the files tracked at HEAD (hotspots leave out the rest), and
    `Exclusions.load(repo_root)`, then runs `exclusions.apply(commits)`.
 3. `EvolutionScreen._show()` picks the commits for the mode (authored or
    everything), applies the `t` time filter (`base_size` = net lines before the
@@ -102,12 +102,15 @@ reference are in README.md ("Evolution" and "Configuring Evolution exclusions").
 5. `Enter` posts `PeriodChosen` → `CommitSearchModal` with that period's commits →
    `CommitFilesModal` (skipped for a file scope) → the screen dismisses with
    `(path, sha)` → `GVTApp._load_file(path, focus_sha=sha)` opens the timeline on
-   that commit.
+   that commit. In Hotspots, `Enter` posts `FileChosen` and the screen dismisses with
+   `(path, None)`, which opens the file at its newest commit.
 
 ### Rules to keep
 
 - Binning, scaling and label layout belong in `gvt/evolution.py`, pure and
   unit-tested; the widgets only render.
+- Hotspot scoring (`rank_hotspots`, `hotspot_half_life`, `hbar`, `age_label`) lives in
+  `gvt/evolution.py`; `HotspotsView` only renders and navigates.
 - Exclusions are applied in memory to per-file stats, never as git pathspecs, so
   `x` toggles instantly and regex rules work.
 - Exclusions affect only the Evolution screen. The timeline, diffs, blame, commit

@@ -81,6 +81,7 @@ Press `v` to see how code grew over time. It covers whatever is highlighted in t
 
 - **Calendar** — a year of days shaded by commit count, like a GitHub contribution graph. `[` / `]` page back and forward a year.
 - **Frequency** — lines added (up) and deleted (down) across the project's whole history, from the repo's first commit to today, in daily bars when they fit and weekly, monthly or yearly bars otherwise. Press `m` for **volume** mode: the code's size over time above churn bars (lines added + deleted), like price and volume on a stock chart. The status line shows how much of the code changed in that period.
+- **Hotspots** — the files that change most often, ranked by commit count with recent commits counting more: a commit's weight halves every quarter of the history shown (at least every 30 days), so `t 3m` focuses on the last few months. Each row shows the commit count, lines added and deleted, and when the file last changed. Files that no longer exist are left out. Press `Enter` to open a file in the timeline.
 - **Release tags** marked on both time axes.
 - **Jump to history** — press `Enter` on a day or week to list its commits, then open one in the timeline.
 
@@ -98,7 +99,7 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 
 ### All Features
 
-- **Evolution** (`v`) — contribution calendar, code frequency and volume charts for a file, directory or the whole repo, counting only authored code by default
+- **Evolution** (`v`) — contribution calendar, code frequency and volume charts, and hotspots for a file, directory or the whole repo, counting only authored code by default
 - **Syntax-highlighted diffs** with inline, whole-file (`w`), and side-by-side (`d`) views
 - **Diff search** (`/`) — regex search within the diff with `n`/`p` to navigate matches
 - **Commit search** (`c`) — fuzzy search the 500 most recent non-merge commits reachable from HEAD by message, branch, or author, then open a file at that commit
@@ -131,7 +132,7 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 | `n`/`p` | Next/prev diff hunk |
 | `y` / `Y` | Copy short/full commit hash |
 | `e` | Open file in editor |
-| `v` | Evolution (calendar, frequency) |
+| `v` | Evolution (calendar, frequency, hotspots) |
 | `?` | Help |
 | `q` | Quit (with confirmation) |
 | `qq` | Quit immediately |
@@ -158,17 +159,18 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` / `1`-`2` | Switch view |
+| `Tab` / `Shift+Tab` / `1`-`3` | Switch view |
 | `h`/`l` | Move a week (calendar) or a period (frequency) |
-| `j`/`k` | Move a day (calendar) |
+| `j`/`k` | Move a day (calendar) or a file (hotspots) |
 | `[` / `]` | Page back/forward a year (calendar) |
 | `0`/`$` | First/last period (frequency) |
 | `m` | Toggle volume mode (frequency) |
+| `g`/`G` | First/last file (hotspots) |
 | `u` | Widen to the parent folder: file → folder → … → whole repo (the title flashes) |
 | `Ctrl+h/j/k/l` | Move to the neighboring tmux pane |
 | `x` | Toggle authored only / everything |
 | `X` | Exclusion details: what's left out and why |
-| `Enter` | List commits, then open one in the timeline |
+| `Enter` | List commits, then open one in the timeline; in hotspots, open the file |
 | `Esc` | Back |
 
 ### Search Modals
@@ -275,7 +277,7 @@ Exclusion rules can come from files inside the repo you're viewing: `.gvt.toml`,
 
 ### What exclusions change
 
-- **Changed:** the calendar, frequency and volume charts and the summary line count only lines in files that aren't excluded.
+- **Changed:** the calendar, frequency and volume charts and the summary line count only lines in files that aren't excluded, and hotspots leave excluded files out.
 - **Dropped commits:** commits that touch only excluded files (a lockfile bump, a snapshot update) disappear from commit counts, the calendar and the commit list. The same goes for commits listed in `ignore_revs`.
 - **Not changed:** the main timeline, diffs, blame, commit search (`c`) and the file picker always show everything.
 
