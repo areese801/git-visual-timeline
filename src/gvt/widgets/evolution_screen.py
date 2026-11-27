@@ -25,8 +25,9 @@ from gvt.git.repo import CommitInfo, GitRepo, TagInfo
 from gvt.logging_setup import get_logger
 from gvt.textsafe import safe_name, safe_text
 from gvt.widgets.calendar_view import CalendarView
-from gvt.widgets.evolution_common import EvolutionView, PeriodChosen, plural
+from gvt.widgets.evolution_common import EvolutionView, FileChosen, PeriodChosen, plural
 from gvt.widgets.frequency_view import FrequencyView, compact
+from gvt.widgets.hotspots_view import HotspotsView
 from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionDetailsModal
 from gvt.widgets.timeline import parse_time_filter
 
@@ -39,6 +40,7 @@ MAX_WARNING_TOASTS = 3
 VIEWS = {
     "calendar": "calendar-view",
     "frequency": "frequency-view",
+    "hotspots": "hotspots-view",
 }
 
 # Shortcut legend per view: (key, description, priority). When the terminal is
@@ -63,6 +65,16 @@ LEGENDS = {
         ("x", "authored/all", 1),
         ("X", "details", 2),
         ("Enter", "list", 2),
+        ("Esc", "back", 1),
+    ],
+    "hotspots": [
+        ("Tab", "views", 6),
+        ("j/k", "move", 3),
+        ("g/G", "ends", 7),
+        ("u", "parent folder", 5),
+        ("x", "authored/all", 1),
+        ("X", "details", 2),
+        ("Enter", "open file", 2),
         ("Esc", "back", 1),
     ],
 }
@@ -120,7 +132,7 @@ def in_scope(path: str, scope: str) -> bool:
 
 class EvolutionScreen(Screen):
     """
-    Tabbed calendar and frequency views for one scope.
+    Tabbed calendar, frequency and hotspots views for one scope.
 
     Dismisses with (file_path, commit_sha) when the user jumps into a file's
     history, or None on Esc.
@@ -173,6 +185,7 @@ class EvolutionScreen(Screen):
         ("shift+tab", "cycle_view(-1)", "Prev view"),
         ("1", "show_view('calendar')", "Calendar"),
         ("2", "show_view('frequency')", "Frequency"),
+        ("3", "show_view('hotspots')", "Hotspots"),
         ("x", "toggle_excludes", "Authored/everything"),
         ("X", "show_rules", "Exclusion rules"),
         ("u", "widen", "Widen to parent folder"),
@@ -222,6 +235,8 @@ class EvolutionScreen(Screen):
         self._all_commits: list[CommitInfo] = []
         self._tags: list[TagInfo] = []
         self._first_commit: datetime | None = None
+        # Files tracked at HEAD; hotspots leave out the rest (deleted files)
+        self._tracked: frozenset[str] = frozenset()
         self._exclusions: Exclusions | None = None
         # The config's default mode applies once; x and widening keep the choice
         self._mode_chosen = False
@@ -237,6 +252,8 @@ class EvolutionScreen(Screen):
                     yield CalendarView(tz=self.tz, id="calendar-view")
                 with TabPane("2 Frequency", id="frequency"):
                     yield FrequencyView(tz=self.tz, id="frequency-view")
+                with TabPane("3 Hotspots", id="hotspots"):
+                    yield HotspotsView(tz=self.tz, id="hotspots-view")
         yield Static(legend_text("calendar"), id="evolution-legend")
 
     def _set_title(self) -> None:
@@ -265,6 +282,7 @@ class EvolutionScreen(Screen):
             commits = self.git_repo.get_scope_commits(scope)
             tags = self.git_repo.get_tags()
             first_commit = self.git_repo.get_first_commit_date()
+            tracked = frozenset(self.git_repo.get_tracked_files())
             exclusions = Exclusions.load(self.git_repo.root, self.user_config)
             filtered = exclusions.apply(commits, should_stop=lambda: worker.is_cancelled)
         except Exception as e:
@@ -276,7 +294,9 @@ class EvolutionScreen(Screen):
             return
         if worker.is_cancelled:
             return
-        self.app.call_from_thread(self._apply_history, scope, commits, tags, first_commit, exclusions, filtered)
+        self.app.call_from_thread(
+            self._apply_history, scope, commits, tags, first_commit, exclusions, filtered, tracked
+        )
 
     def _views(self) -> list[EvolutionView]:
         return list(self.query(EvolutionView))
@@ -295,12 +315,14 @@ class EvolutionScreen(Screen):
         first_commit: datetime | None,
         exclusions: Exclusions,
         filtered: FilterResult,
+        tracked: frozenset[str] = frozenset(),
     ) -> None:
         if not self.is_attached or scope != self.scope:
             return
         self._all_commits = commits
         self._tags = tags
         self._first_commit = first_commit
+        self._tracked = tracked
         self._exclusions = exclusions
         self._filtered = filtered
         if not self._mode_chosen:
@@ -386,6 +408,11 @@ class EvolutionScreen(Screen):
         else:
             history_start = None
         self.query_one(FrequencyView).history_start = history_start
+        hotspots = self.query_one(HotspotsView)
+        hotspots.history_start = history_start
+        hotspots.scope_is_file = self.scope_is_file
+        scope, tracked = self.scope, self._tracked
+        hotspots.keep = lambda path: path in tracked and in_scope(path, scope)
         for view in self._views():
             view.set_data(commits, self._tags, base_size)
 
@@ -481,6 +508,10 @@ class EvolutionScreen(Screen):
         self.dismiss(None)
 
     # Jump to history
+
+    @on(FileChosen)
+    def _on_file_chosen(self, event: FileChosen) -> None:
+        self.dismiss((event.path, None))
 
     @on(PeriodChosen)
     def _on_period_chosen(self, event: PeriodChosen) -> None:

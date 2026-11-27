@@ -11,6 +11,7 @@ from gvt.widgets.calendar_view import CalendarView
 from gvt.widgets.file_tree import FileTreeWidget
 from gvt.widgets.evolution_screen import EvolutionScreen, in_scope, summarize
 from gvt.widgets.frequency_view import FrequencyView
+from gvt.widgets.hotspots_view import HotspotsView
 from gvt.widgets.modals import CommitFilesModal, CommitSearchModal, ExclusionDetailsModal
 from gvt.widgets.timeline import TimelineWidget
 
@@ -263,6 +264,9 @@ class _StubRepo:
 
     def get_tags(self):
         return []
+
+    def get_tracked_files(self):
+        return sorted({path for c in self.commits for path, _, _ in c.files})
 
     def get_first_commit_date(self):
         return min(c.date for c in self.commits) if self.commits else None
@@ -583,3 +587,97 @@ async def test_ctrl_hjkl_hands_off_to_tmux(fixture_repo, monkeypatch):
         await pilot.pause()
         assert app.screen is screen
     assert moves == ["L", "D", "U", "R", "L"]
+
+
+async def test_hotspots_rank_files_and_enter_opens_one(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        await pilot.press("3")
+        await pilot.pause()
+        view = screen.query_one(HotspotsView)
+        assert view.has_focus
+        # Same-day commits all weigh 1, so this is the commit count order
+        assert [s.path for s in view.hotspots] == ["hello.py", "src/app.py", "README.md"]
+        assert " g/G " in str(screen.query_one("#evolution-legend").render())
+        await pilot.press("j", "enter")
+        await _settle(app, pilot)
+        assert not isinstance(app.screen, EvolutionScreen)
+        assert app.current_file == "src/app.py"
+        timeline = app.query_one("#timeline-widget", TimelineWidget)
+        assert timeline.commits[timeline.cursor].message == "Update app and hello"
+
+
+async def test_tab_wraps_from_hotspots_to_calendar(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        await pilot.press("tab", "tab")
+        await pilot.pause()
+        assert screen.query_one(HotspotsView).has_focus
+        await pilot.press("tab")
+        await pilot.pause()
+        assert screen.query_one(CalendarView).has_focus
+
+
+async def test_hotspots_leave_out_deleted_files(fixture_repo):
+    repo = Repo(fixture_repo)
+    repo.index.remove(["README.md"], working_tree=True)
+    repo.index.commit("Remove README")
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        paths = [s.path for s in screen.query_one(HotspotsView).hotspots]
+        assert paths == ["hello.py", "src/app.py"]
+
+
+async def test_hotspots_follow_authored_mode(fixture_repo):
+    _add_lockfile_commits(fixture_repo)
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        view = screen.query_one(HotspotsView)
+        assert "pnpm-lock.yaml" not in [s.path for s in view.hotspots]
+        await pilot.press("x")
+        await pilot.pause()
+        assert "pnpm-lock.yaml" in [s.path for s in view.hotspots]
+
+
+async def test_hotspots_follow_the_time_filter(fixture_repo):
+    old = CommitInfo(
+        "a" * 40, datetime(2020, 1, 1, tzinfo=timezone.utc), "T", "old", 100, 20, files=[("old.py", 100, 20)]
+    )
+    new = CommitInfo("b" * 40, datetime.now(tz=timezone.utc), "T", "new", 5, 1, files=[("new.py", 5, 1)])
+    app = GVTApp(repo_path=fixture_repo)
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        app.push_screen(EvolutionScreen(_StubRepo([new, old]), ".", "whole repo", False, time_filter="1y"))
+        await _settle(app, pilot)
+        assert [s.path for s in app.screen.query_one(HotspotsView).hotspots] == ["new.py"]
+
+
+async def test_hotspots_ask_to_widen_a_file_scope(fixture_repo):
+    app = GVTApp(repo_path=fixture_repo, initial_file="src/app.py")
+    async with app.run_test(size=SIZE) as pilot:
+        await _settle(app, pilot)
+        screen = await _open_evolution(app, pilot)
+        await pilot.press("3")
+        await pilot.pause()
+        view = screen.query_one(HotspotsView)
+        assert "press u to widen" in view.render().plain
+        await pilot.press("u")
+        await _settle(app, pilot)
+        assert [s.path for s in view.hotspots] == ["src/app.py"]
+
+
+def test_hotspots_legend_fits_80_columns():
+    from gvt.widgets.evolution_screen import legend_text
+
+    narrow = legend_text("hotspots", 80).plain
+    assert len(narrow) <= 80
+    for key in (" x ", " X ", " Enter ", " Esc "):
+        assert key in narrow
