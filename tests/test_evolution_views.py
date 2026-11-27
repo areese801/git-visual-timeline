@@ -2,12 +2,14 @@
 
 from datetime import date, datetime, timedelta, timezone
 
+from rich.cells import cell_len
 from textual.app import App, ComposeResult
 
 from gvt.git.repo import CommitInfo, TagInfo
 from gvt.widgets.calendar_view import CalendarView
-from gvt.widgets.evolution_common import PeriodChosen
+from gvt.widgets.evolution_common import FileChosen, PeriodChosen
 from gvt.widgets.frequency_view import FrequencyView, compact
+from gvt.widgets.hotspots_view import FILE_SCOPE_MESSAGE, NO_FILES_MESSAGE, HotspotsView, fit_columns, shorten_left
 
 UTC = timezone.utc
 
@@ -38,6 +40,7 @@ class ViewHost(App):
         super().__init__()
         self.view = view
         self.chosen: list[PeriodChosen] = []
+        self.files: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield self.view
@@ -47,6 +50,9 @@ class ViewHost(App):
 
     def on_period_chosen(self, event: PeriodChosen) -> None:
         self.chosen.append(event)
+
+    def on_file_chosen(self, event: FileChosen) -> None:
+        self.files.append(event.path)
 
 
 async def _mounted_calendar(pilot_size=(120, 14)):
@@ -358,3 +364,109 @@ class TestFrequencyVolumeMode:
             chart = "\n".join(view.render().plain.split("\n")[:12])
             assert "█" in chart
             assert "━" in chart  # cursor on the baseline
+
+
+def _touching(day: date, *paths: str, n: int = 0) -> CommitInfo:
+    commit = _commit(day, 2 * len(paths), len(paths), n)
+    commit.files = [(path, 2, 1) for path in paths]
+    return commit
+
+
+HOT_TODAY = date(2026, 11, 20)
+
+HOT_COMMITS = [
+    _touching(date(2026, 11, 20), "src/app.py", "README.md", n=1),
+    _touching(date(2026, 11, 19), "src/app.py", n=2),
+    _touching(date(2026, 11, 18), "src/app.py", "tests/test_app.py", n=3),
+]
+
+
+def _hotspots_view(**attrs) -> HotspotsView:
+    view = HotspotsView(tz=UTC)
+    view.today = HOT_TODAY
+    for name, value in attrs.items():
+        setattr(view, name, value)
+    return view
+
+
+def test_fit_columns_drops_optional_columns_as_space_runs_out():
+    assert fit_columns(130, 3) == (70, ["bar", "commits", "lines", "age"])
+    assert fit_columns(80, 3) == (20, ["bar", "commits", "lines", "age"])
+    assert fit_columns(70, 3) == (20, ["bar", "commits", "lines"])
+    assert fit_columns(40, 3) == (21, ["commits"])
+    assert fit_columns(10, 3) == (1, ["commits"])
+
+
+def test_shorten_left_keeps_the_end_of_the_path():
+    assert shorten_left("a.py", 10) == "a.py"
+    assert shorten_left("src/gvt/widgets/modals.py", 12) == "…s/modals.py"
+    wide = shorten_left("日本語.py", 6)
+    assert wide == "…語.py" and cell_len(wide) == 6
+
+
+class TestHotspotsView:
+    async def test_rows_are_ranked_with_the_cursor_on_top(self):
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(100, 14)) as pilot:
+            view.set_data(HOT_COMMITS, [])
+            await pilot.pause()
+            assert [s.path for s in view.hotspots] == ["src/app.py", "README.md", "tests/test_app.py"]
+            lines = view.render().plain.splitlines()
+            assert "src/app.py" in lines[0] and "3 commits" in lines[0] and "today" in lines[0]
+            assert len(lines) == 14 and "last changed 2026-11-20" in lines[-1]
+            assert "3 commits, 3 in the last 30 days" in view.status_text().plain
+
+    async def test_j_and_enter_choose_the_file(self):
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(100, 14)) as pilot:
+            view.set_data(HOT_COMMITS, [])
+            await pilot.press("j", "enter")
+            await pilot.pause()
+            assert host.files == ["README.md"]
+
+    async def test_ends_and_paging_scroll_the_list(self):
+        commits = [_touching(HOT_TODAY - timedelta(days=i), f"f{i:02d}.py", n=i) for i in range(30)]
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(100, 14)) as pilot:  # 12 rows of files
+            view.set_data(commits, [])
+            await pilot.press("G")
+            assert (view.cursor, view.top) == (29, 18)
+            rendered = view.render().plain
+            assert "f29.py" in rendered and "f00.py" not in rendered
+            await pilot.press("g")
+            assert (view.cursor, view.top) == (0, 0)
+            await pilot.press("pagedown")
+            assert (view.cursor, view.top) == (12, 1)
+            await pilot.press("k")
+            assert (view.cursor, view.top) == (11, 1)
+
+    async def test_messages_for_file_scope_and_nothing_kept(self):
+        view = _hotspots_view(scope_is_file=True)
+        host = ViewHost(view)
+        async with host.run_test(size=(100, 14)) as pilot:
+            view.set_data(HOT_COMMITS, [])
+            await pilot.pause()
+            assert FILE_SCOPE_MESSAGE in view.render().plain
+            view.scope_is_file = False
+            view.keep = lambda path: False
+            view.set_data(HOT_COMMITS, [])
+            await pilot.pause()
+            assert NO_FILES_MESSAGE in view.render().plain
+            await pilot.press("enter")
+            assert host.files == []
+
+    async def test_names_are_shown_safely(self):
+        path = "[red]x\x1b]0;T\x07.py"
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(100, 14)) as pilot:
+            view.set_data([_touching(HOT_TODAY, path)], [])
+            await pilot.pause()
+            rendered = view.render().plain + view.status_text().plain
+            assert "[red]x" in rendered
+            assert "\x1b" not in rendered and "\x07" not in rendered
+            await pilot.press("enter")
+            assert host.files == [path]  # the raw path still opens the file
