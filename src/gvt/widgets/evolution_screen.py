@@ -135,7 +135,7 @@ class EvolutionScreen(Screen):
     Tabbed calendar, frequency and hotspots views for one scope.
 
     Dismisses with (file_path, commit_sha) when the user jumps into a file's
-    history, or None on Esc.
+    history, (file_path, None) to open a file at its newest commit, or None on Esc.
     """
 
     DEFAULT_CSS = """
