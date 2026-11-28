@@ -691,9 +691,10 @@ class HelpModal(ModalScreen):
                 ("Enter", "Open file timeline"),
             ]),
             ("Evolution (v)", [
-                ("Tab / 1-2", "Switch view: calendar, frequency"),
+                ("Tab / 1-3", "Switch view: calendar, frequency, hotspots"),
                 ("h/l/←/→", "Move a week (calendar) or period"),
-                ("j/k/↑/↓", "Move a day (calendar)"),
+                ("j/k/↑/↓", "Move a day (calendar) or file (hotspots)"),
+                ("g/G", "First/last file (hotspots)"),
                 ("[ / ]", "Page back/forward a year (calendar)"),
                 ("0/$", "First/last period (frequency)"),
                 ("m", "Volume mode: size over time + churn (frequency)"),
@@ -701,7 +702,7 @@ class HelpModal(ModalScreen):
                 ("Ctrl+h/j/k/l", "Move to the neighboring tmux pane"),
                 ("x", "Toggle authored only / everything"),
                 ("X", "Exclusion details: what's left out and why"),
-                ("Enter", "List commits → open in timeline"),
+                ("Enter", "List commits → open in timeline (hotspots: open the file)"),
                 ("Esc", "Back to panes"),
             ]),
         ]
@@ -846,9 +847,9 @@ class ExclusionDetailsModal(ModalScreen):
         text.append(
             "Some files are committed on purpose but not written by hand: lockfiles, generated\n"
             "snapshots, minified bundles, vendored code. Their churn hides how the code itself\n"
-            "evolves, so authored mode leaves them out of the calendar, frequency and volume\n"
-            "charts and the summary line. The commit list follows the mode; the file picker and\n"
-            "the main timeline always show every file.\n",
+            "evolves, so authored mode leaves them out of the calendar, frequency, volume and\n"
+            "hotspots views and the summary line. The commit list follows the mode; the file\n"
+            "picker and the main timeline always show every file.\n",
             style=COLOR_TEXT,
         )
 

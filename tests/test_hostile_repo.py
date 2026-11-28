@@ -304,6 +304,25 @@ class TestDisplayedNames:
         assert "v1" in commits[0].refs
         assert _display_safe(commits[0].refs)
 
+    async def test_hotspot_rows_show_names_escaped(self, unicode_tricks_repo):
+        from gvt.widgets.hotspots_view import HotspotsView
+
+        app = GVTApp(repo_path=unicode_tricks_repo)
+        async with app.run_test(size=self.SIZE) as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("v")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("3")
+            await pilot.pause()
+            view = app.screen.query_one(HotspotsView)
+            # Raw names are kept for opening; only the display is escaped
+            assert {s.path for s in view.hotspots} == {"bidi‮txt.py", "c1\x9bname.py"}
+            rendered = view.render().plain + view.status_text().plain
+            assert "bidi" in rendered and _display_safe(rendered)
+
     async def test_file_names_with_c1_and_bidi_are_shown_escaped(self, unicode_tricks_repo):
         from gvt.widgets.changed_files import ChangedFilesWidget
         from gvt.widgets.status_bar import GVTStatusBar

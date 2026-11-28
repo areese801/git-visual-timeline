@@ -2,8 +2,8 @@
 Pure binning and layout helpers for the Evolution views.
 
 Nothing here touches git or Textual: functions take CommitInfo/TagInfo lists and
-dates and return plain data, so the calendar and frequency widgets stay thin and
-this logic stays unit-testable.
+dates and return plain data, so the calendar, frequency and hotspots widgets stay
+thin and this logic stays unit-testable.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
 
 from gvt.git.repo import CommitInfo, TagInfo
 
@@ -32,6 +32,12 @@ WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Widest column a single period gets when the axis is short
 MAX_COLUMN_WIDTH = 4
+
+# Eighth blocks growing right from the left edge, indexed by eighths filled (0-8)
+LEFT_BLOCKS = " ▏▎▍▌▋▊▉█"
+
+# Shortest half-life for hotspot recency weighting, in days
+HOTSPOT_MIN_HALF_LIFE_DAYS = 30
 
 
 @dataclass
@@ -435,3 +441,100 @@ def tags_between(tags: Iterable[TagInfo], start: date, end: date, tz: tzinfo | N
     Names of tags whose commit falls on a local day in [start, end).
     """
     return [t.name for t in tags if start <= local_day(t.date, tz) < end]
+
+
+# Hotspots
+
+
+@dataclass
+class Hotspot:
+    """
+    One file's place in the hotspot ranking.
+    """
+
+    path: str
+    score: float = 0.0
+    commits: int = 0
+    # Commits less than one half-life old
+    recent_commits: int = 0
+    additions: int = 0
+    deletions: int = 0
+    last_change: datetime | None = None
+
+
+def hotspot_half_life(start: date, today: date) -> float:
+    """
+    Days for a commit's hotspot weight to halve: a quarter of the span from
+    `start` to `today`, and at least HOTSPOT_MIN_HALF_LIFE_DAYS.
+    """
+    return max(float(HOTSPOT_MIN_HALF_LIFE_DAYS), (today - start).days / 4)
+
+
+def rank_hotspots(
+    commits: Iterable[CommitInfo],
+    today: date,
+    half_life: float,
+    keep: Callable[[str], bool] = lambda path: True,
+    tz: tzinfo | None = None,
+) -> list[Hotspot]:
+    """
+    Files ranked by recency-weighted commit count, highest first.
+
+    Each commit adds 0.5 ** (age_days / half_life) to every file in its
+    `files`, where age_days counts whole days from its local day to `today`
+    (never negative). Ties go to the file with more commits, then by path.
+
+    :param keep: False for paths to leave out (untracked, outside the scope);
+        asked once per path.
+    """
+    spots: dict[str, Hotspot] = {}
+    dropped: set[str] = set()
+    for commit in commits:
+        age = max(0, (today - local_day(commit.date, tz)).days)
+        weight = 0.5 ** (age / half_life)
+        for path, adds, dels in commit.files:
+            spot = spots.get(path)
+            if spot is None:
+                if path in dropped:
+                    continue
+                if not keep(path):
+                    dropped.add(path)
+                    continue
+                spot = spots[path] = Hotspot(path)
+            spot.score += weight
+            spot.commits += 1
+            if age < half_life:
+                spot.recent_commits += 1
+            spot.additions += adds
+            spot.deletions += dels
+            if spot.last_change is None or commit.date > spot.last_change:
+                spot.last_change = commit.date
+    return sorted(spots.values(), key=lambda s: (-s.score, -s.commits, s.path))
+
+
+def hbar(fraction: float, width: int) -> str:
+    """
+    A bar `width` cells wide filled to `fraction` (0-1) in eighths, padded with
+    spaces. Any fraction above zero shows at least one eighth.
+    """
+    eighths = round(max(0.0, min(1.0, fraction)) * width * 8)
+    if fraction > 0:
+        eighths = max(eighths, 1)
+    full, rest = divmod(eighths, 8)
+    return ("█" * full + (LEFT_BLOCKS[rest] if rest else "")).ljust(width)
+
+
+def age_label(day: date, today: date) -> str:
+    """
+    Short age of a day: 'today', '5d ago', '3w ago', '4mo ago', '2y ago'.
+    """
+    days = (today - day).days
+    if days <= 0:
+        return "today"
+    if days < 14:
+        return f"{days}d ago"
+    if days < 60:
+        return f"{days // 7}w ago"
+    if days < 730:
+        return f"{days // 30}mo ago"
+    return f"{days // 365}y ago"

@@ -1,5 +1,5 @@
 """
-Shared pieces for the Evolution views: the period message and a base widget.
+Shared pieces for the Evolution views: the period and file messages and a base widget.
 """
 
 from __future__ import annotations
@@ -33,6 +33,16 @@ class PeriodChosen(Message):
         self.start = start
         self.end = end  # exclusive
         self.label = label
+        super().__init__()
+
+
+class FileChosen(Message):
+    """
+    Posted when the user presses Enter on a file (hotspots).
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
         super().__init__()
 
 
