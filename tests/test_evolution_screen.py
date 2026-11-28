@@ -499,7 +499,7 @@ async def test_widen_ignores_results_for_an_older_scope(fixture_repo):
         assert screen._exclusions is None  # x and X wait for the new scope
         assert screen._all_commits == []
         # A late result for the file scope must not replace the folder's data
-        screen._apply_history("src/app.py", stale, [], None, None, None)
+        screen._apply_history("src/app.py", stale, [], None, None, None, frozenset())
         await _settle(app, pilot)
         assert screen.scope == "src" and len(screen.commits) == 2
         screen._show_message("obsolete failure", "src/app.py")

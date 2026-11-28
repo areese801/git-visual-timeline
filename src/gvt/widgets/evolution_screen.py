@@ -315,7 +315,7 @@ class EvolutionScreen(Screen):
         first_commit: datetime | None,
         exclusions: Exclusions,
         filtered: FilterResult,
-        tracked: frozenset[str] = frozenset(),
+        tracked: frozenset[str],
     ) -> None:
         if not self.is_attached or scope != self.scope:
             return

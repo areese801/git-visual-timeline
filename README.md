@@ -165,7 +165,8 @@ The defaults work without any setup. To change them, see [Configuring Evolution 
 | `[` / `]` | Page back/forward a year (calendar) |
 | `0`/`$` | First/last period (frequency) |
 | `m` | Toggle volume mode (frequency) |
-| `g`/`G` | First/last file (hotspots) |
+| `g`/`G`, `Home`/`End` | First/last file (hotspots) |
+| `PgUp`/`PgDn` | Page through files (hotspots) |
 | `u` | Widen to the parent folder: file → folder → … → whole repo (the title flashes) |
 | `Ctrl+h/j/k/l` | Move to the neighboring tmux pane |
 | `x` | Toggle authored only / everything |

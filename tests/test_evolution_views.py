@@ -404,6 +404,11 @@ def test_shorten_left_keeps_the_end_of_the_path():
     assert wide == "…語.py" and cell_len(wide) == 6
 
 
+def test_shorten_left_handles_very_long_wide_paths():
+    short = shorten_left("日本語" * 1333 + "日", 30)
+    assert short.startswith("…") and cell_len(short) <= 30
+
+
 class TestHotspotsView:
     async def test_rows_are_ranked_with_the_cursor_on_top(self):
         view = _hotspots_view()
@@ -470,3 +475,41 @@ class TestHotspotsView:
             assert "\x1b" not in rendered and "\x07" not in rendered
             await pilot.press("enter")
             assert host.files == [path]  # the raw path still opens the file
+
+
+class TestHotspotsLayout:
+    async def test_status_line_fits_at_80_columns(self):
+        path = "src/gvt/widgets/a/very/deeply/nested/directory/structure/hotspots_view.py"
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(80, 24)) as pilot:
+            view.set_data([_touching(HOT_TODAY, path)], [])
+            await pilot.pause()
+            lines = view.render().plain.splitlines()
+            assert all(cell_len(line) <= 80 for line in lines)
+            assert "last changed" in lines[-1]
+
+    async def test_path_column_hugs_the_longest_path_on_wide_terminals(self):
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(170, 14)) as pilot:
+            view.set_data(HOT_COMMITS, [])
+            await pilot.pause()
+            rendered = view.render()
+            lines = rendered.plain.splitlines()
+            assert lines[0].index("█") < 40
+            # The cursor row's highlight spans the whole widget
+            assert cell_len(lines[0]) == 170
+            assert any(span.end >= len(lines[0]) and "on #283457" in str(span.style) for span in rendered.spans)
+
+    async def test_growing_the_terminal_removes_blank_rows(self):
+        commits = [_touching(HOT_TODAY - timedelta(days=i), f"f{i:02d}.py", n=i) for i in range(30)]
+        view = _hotspots_view()
+        host = ViewHost(view)
+        async with host.run_test(size=(100, 14)) as pilot:
+            view.set_data(commits, [])
+            await pilot.press("G")
+            assert view.top == 18
+            await pilot.resize_terminal(100, 24)
+            await pilot.pause()
+            assert view.top == 8

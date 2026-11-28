@@ -40,6 +40,8 @@ MIN_PATH = 20
 DROP_ORDER = ("age", "lines", "bar")
 # Rows below the list: blank, status
 FOOTER_ROWS = 2
+# Narrowest path in the status line before "last changed" is dropped
+MIN_STATUS_PATH = 10
 
 
 def fit_columns(width: int, rank_width: int) -> tuple[int, list[str]]:
@@ -68,9 +70,11 @@ def shorten_left(name: str, width: int) -> str:
     """
     if cell_len(name) <= width:
         return name
-    while name and cell_len(name) > width - 1:
-        name = name[1:]
-    return "…" + name
+    budget, used, start = width - 1, 0, len(name)
+    while start > 0 and used + cell_len(name[start - 1]) <= budget:
+        used += cell_len(name[start - 1])
+        start -= 1
+    return "…" + name[start:]
 
 
 class HotspotsView(EvolutionView):
@@ -101,6 +105,8 @@ class HotspotsView(EvolutionView):
         # Index of the first row shown
         self.top = 0
         self.half_life = 0.0
+        # Cells in the longest path, so the path column never outgrows the data
+        self.longest_path = 0
         # Set by the screen before set_data(): which paths count, whether the
         # scope is a single file, and the first day of the history shown
         self.keep: Callable[[str], bool] = lambda path: True
@@ -115,6 +121,7 @@ class HotspotsView(EvolutionView):
     def on_data_changed(self) -> None:
         self.cursor = self.top = 0
         self.hotspots = []
+        self.longest_path = 0
         if self.scope_is_file:
             self.message = FILE_SCOPE_MESSAGE
             return
@@ -126,6 +133,8 @@ class HotspotsView(EvolutionView):
         self.hotspots = rank_hotspots(self.commits, today, self.half_life, self.keep, self.tz)
         if not self.hotspots:
             self.message = NO_FILES_MESSAGE
+        else:
+            self.longest_path = max(cell_len(safe_name(s.path)) for s in self.hotspots)
 
     # Navigation
 
@@ -144,6 +153,8 @@ class HotspotsView(EvolutionView):
 
     def on_resize(self) -> None:
         self._scroll_to_cursor()
+        # A taller terminal shouldn't leave blank rows below a long list
+        self.top = max(0, min(self.top, len(self.hotspots) - self._rows()))
 
     def _go(self, index: int) -> None:
         if not self.hotspots:
@@ -171,16 +182,25 @@ class HotspotsView(EvolutionView):
         if not self.hotspots:
             return Text()
         spot = self.hotspots[self.cursor]
-        text = Text()
-        text.append(shorten_left(safe_name(spot.path), max(1, self.size.width // 2)), style=f"bold {COLOR_TEXT}")
-        text.append("  ·  ", style=COLOR_DIM)
-        text.append(
+        counts = (
             f"{plural(spot.commits, 'commit')}, {format_count(spot.recent_commits)} "
-            f"in the last {round(self.half_life)} days",
-            style=COLOR_TEXT,
+            f"in the last {round(self.half_life)} days"
         )
-        text.append("  ·  ", style=COLOR_DIM)
-        text.append(f"last changed {local_day(spot.last_change, self.tz).isoformat()}", style=COLOR_TEXT)
+        changed = f"last changed {local_day(spot.last_change, self.tz).isoformat()}"
+        separator = "  ·  "
+        # Build the tail first, then give the path whatever width is left
+        tail = cell_len(separator) * 2 + cell_len(counts) + cell_len(changed)
+        show_changed = self.size.width - tail >= MIN_STATUS_PATH
+        if not show_changed:
+            tail -= cell_len(separator) + cell_len(changed)
+        path_width = max(1, self.size.width - tail)
+        text = Text()
+        text.append(shorten_left(safe_name(spot.path), path_width), style=f"bold {COLOR_TEXT}")
+        text.append(separator, style=COLOR_DIM)
+        text.append(counts, style=COLOR_TEXT)
+        if show_changed:
+            text.append(separator, style=COLOR_DIM)
+            text.append(changed, style=COLOR_TEXT)
         return text
 
     def _append_cell(self, text: Text, column: str, spot: Hotspot, top_score: float, today: date) -> None:
@@ -207,6 +227,7 @@ class HotspotsView(EvolutionView):
 
         rank_width = len(str(len(self.hotspots))) + 2
         path_width, columns = fit_columns(self.size.width, rank_width)
+        path_width = max(1, min(path_width, self.longest_path))
         top_score = self.hotspots[0].score
         today = self._today()
         rows = self._rows()
@@ -222,6 +243,7 @@ class HotspotsView(EvolutionView):
                 text.append(" " * GAP)
                 self._append_cell(text, column, spot, top_score, today)
             if index == self.cursor:
+                text.append(" " * max(0, self.size.width - cell_len(text.plain[start:])))
                 text.stylize(f"bold on {COLOR_ROW_CURSOR}", start, len(text))
             text.append("\n")
         # Blank rows below a short list, then a spacer, then the status line
